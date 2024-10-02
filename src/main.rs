@@ -1,3 +1,4 @@
+mod fsverity;
 mod tmpdir;
 
 use rustix::mount::{
@@ -16,11 +17,18 @@ use rustix::mount::{
 use std::os::fd::{
     OwnedFd,
     BorrowedFd,
-    AsFd
+    AsFd,
+    AsRawFd
 };
 
 struct FsHandle {
     pub fd: OwnedFd,
+}
+
+impl FsHandle {
+    pub fn open(name: &str) -> std::io::Result<FsHandle> {
+        Ok(FsHandle { fd: fsopen(name, FsOpenFlags::FSOPEN_CLOEXEC)? })
+    }
 }
 
 impl AsFd for FsHandle {
@@ -60,30 +68,63 @@ impl Drop for TmpMount {
     }
 }
 
-fn mount() -> std::io::Result<()> {
-    let erofs = FsHandle { fd: fsopen("erofs", FsOpenFlags::FSOPEN_CLOEXEC)? };
-    fsconfig_set_string(erofs.as_fd(), "source", "/home/lis/src/mountcfs/cfs")?;
-    fsconfig_create(erofs.as_fd())?;
+struct MountOptions<'a> {
+    image: &'a str,
+    basedir: &'a str,
+    digest: Option<&'a str>,
+    verity: bool,
+}
 
-    let overlayfs = FsHandle { fd: fsopen("overlay", FsOpenFlags::FSOPEN_CLOEXEC)? };
-    //fsconfig_set_flag(overlayfs.as_fd(), "ro")?;
-    fsconfig_set_string(overlayfs.as_fd(), "metacopy", "on")?;
-    fsconfig_set_string(overlayfs.as_fd(), "redirect_dir", "on")?;
+impl<'a> MountOptions<'a> {
+    pub fn new(image: &'a str, basedir: &'a str) -> MountOptions<'a> {
+        MountOptions { image, basedir, digest: None, verity: false }
+    }
 
-    // unfortunately we can't do this via the fd: we need a tmpdir mountpoint
-    let tmp = TmpMount::mount(erofs.as_fd())?;  // NB: must live until the "create" operation
-    fsconfig_set_string(overlayfs.as_fd(), "lowerdir+", &tmp.dir.path)?;
-    fsconfig_set_string(overlayfs.as_fd(), "datadir+", "/home/lis/src/mountcfs/digest")?;
-    fsconfig_create(overlayfs.as_fd())?;
+    pub fn set_require_verity(&mut self) {
+        self.verity = true;
+    }
 
-    let bzzt = fsmount(overlayfs.as_fd(), FsMountFlags::FSMOUNT_CLOEXEC, MountAttrFlags::empty())?;
-    move_mount(bzzt.as_fd(), "", rustix::fs::CWD, "mnt", MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH)?;
+    pub fn set_digest(&mut self, digest: &'a str) {
+        self.digest = Some(digest);
+    }
 
-    Ok(())
+    fn mount(self, mountpoint: &str) -> std::io::Result<()> {
+        let image = std::fs::File::open(&self.image)?;
+
+        if let Some(expected) = self.digest {
+            let measured: fsverity::Sha256HashValue = fsverity::ioctl::fs_ioc_measure_verity(&image)?;
+            if expected != hex::encode(measured) {
+                panic!("expected {:?} measured {:?}", expected, measured);
+            }
+        }
+
+        let erofs = FsHandle::open("erofs")?;
+        fsconfig_set_string(erofs.as_fd(), "source", format!("/proc/self/fd/{}", image.as_raw_fd()))?;
+        fsconfig_create(erofs.as_fd())?;
+
+        let overlayfs = FsHandle::open("overlay")?;
+        fsconfig_set_string(overlayfs.as_fd(), "metacopy", "on")?;
+        fsconfig_set_string(overlayfs.as_fd(), "redirect_dir", "on")?;
+
+        // unfortunately we can't do this via the fd: we need a tmpdir mountpoint
+        let tmp = TmpMount::mount(erofs.as_fd())?;  // NB: must live until the "create" operation
+        fsconfig_set_string(overlayfs.as_fd(), "lowerdir+", &tmp.dir.path)?;
+        fsconfig_set_string(overlayfs.as_fd(), "datadir+", self.basedir)?;
+        fsconfig_create(overlayfs.as_fd())?;
+
+        let mnt = fsmount(overlayfs.as_fd(), FsMountFlags::FSMOUNT_CLOEXEC, MountAttrFlags::empty())?;
+        move_mount(mnt.as_fd(), "", rustix::fs::CWD, mountpoint, MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH)?;
+
+        Ok(())
+    }
 }
 
 fn main() {
-    if let Err(x) = mount() {
+    let mut options = MountOptions::new("/home/lis/src/mountcfs/cfs", "/home/lis/src/mountcfs/digest");
+    options.set_digest("77fc256436a40bc31088f212935130724e039e401e5ffc7936c6bdb750b1dfdb");
+    options.set_require_verity();
+
+    if let Err(x) = options.mount("mnt") {
         println!("err {}", x);
     }
 }
