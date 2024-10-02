@@ -1,30 +1,30 @@
-use std::ffi::CString;
+use rand::distributions::{Alphanumeric, DistString};
+use std::path::PathBuf;
 
 pub struct TempDir {
-    pub path: CString,
+    pub path: PathBuf,
 }
 
 impl TempDir {
     pub fn new() -> std::io::Result<TempDir>{
-        let mut template = CString::from(c"/tmp/composefs.upper.XXXXXX");
+        let tmp = PathBuf::from("/tmp");
 
-        unsafe {
-            let raw = template.into_raw();
-            let result = libc::mkdtemp(raw);
-            template = CString::from_raw(raw);
-            if result.is_null() {
-                return Err(std::io::Error::last_os_error());
+        for _ in 0 .. 26*26*26 {  // this is how many times glibc tries
+            let suffix = Alphanumeric.sample_string(&mut rand::thread_rng(), 6);
+            let path = tmp.join(format!("composefs.{}", suffix));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(TempDir { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e)
             }
         }
 
-        return Ok(TempDir { path: template });
+        Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        unsafe {
-            libc::rmdir(self.path.as_ptr());
-        }
+        std::fs::remove_dir(&self.path).expect("can't remove tempdir");
     }
 }
