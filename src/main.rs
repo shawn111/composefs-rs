@@ -7,10 +7,6 @@ use rustix::mount::{
     MoveMountFlags,
     UnmountFlags,
     fsconfig_create,
-    // fsconfig_set_fd,
-    // fsconfig_set_flag,
-    // fsconfig_set_path,
-    // fsconfig_set_path_empty,
     fsconfig_set_string,
     fsmount,
     fsopen,
@@ -73,22 +69,10 @@ fn mount() -> std::io::Result<()> {
     //fsconfig_set_flag(overlayfs.as_fd(), "ro")?;
     fsconfig_set_string(overlayfs.as_fd(), "metacopy", "on")?;
     fsconfig_set_string(overlayfs.as_fd(), "redirect_dir", "on")?;
-    // fsconfig_set_string(overlayfs.as_fd(), "source", "/dev/null")?;
 
-    // let mnt = fsmount(erofs.as_fd(), FsMountFlags::FSMOUNT_CLOEXEC, MountAttrFlags::empty())?;
-    // no, unfortunately:
-    // fsconfig_set_string(overlayfs.as_fd(), "lowerdir+", format!("/proc/self/fd/5"))?;
-    // no, unfortunately:
-    // fsconfig_set_path(overlayfs.as_fd(), "lowerdir+", ".", mnt.as_fd())?;
-    // no, unfortunately:
-    // fsconfig_set_path_empty(overlayfs.as_fd(), "lowerdir+", mnt.as_fd())?;
-    // no, unfortunately:
-    // fsconfig_set_fd(overlayfs.as_fd(), "lowerdir+", mnt.as_fd())?;
-
-    // yes, unfortunately:
+    // unfortunately we can't do this via the fd: we need a tmpdir mountpoint
     let tmp = TmpMount::mount(erofs.as_fd())?;  // NB: must live until the "create" operation
     fsconfig_set_string(overlayfs.as_fd(), "lowerdir+", &tmp.dir.path)?;
-
     fsconfig_set_string(overlayfs.as_fd(), "datadir+", "/home/lis/src/mountcfs/digest")?;
     fsconfig_create(overlayfs.as_fd())?;
 
