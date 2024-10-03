@@ -11,7 +11,7 @@ struct FsVerityLayer {
 
 impl FsVerityLayer {
     fn new() -> FsVerityLayer {
-        return FsVerityLayer { context: Sha256::new(), remaining: 4096 }
+        FsVerityLayer { context: Sha256::new(), remaining: 4096 }
     }
 
     fn add_data(&mut self, data: &[u8]) {
@@ -22,7 +22,7 @@ impl FsVerityLayer {
     fn complete(&mut self) -> Sha256HashValue {
         self.context.update(&[0u8; 4096][..self.remaining]);
         self.remaining = 4096;
-        return self.context.finalize_reset().into();
+        self.context.finalize_reset().into()
     }
 }
 
@@ -47,7 +47,7 @@ impl FsVerityHasher {
     }
 
     pub fn new() -> FsVerityHasher {
-        return FsVerityHasher { layers: vec![], value: None, n_bytes: 0 }
+        FsVerityHasher { layers: vec![], value: None, n_bytes: 0 }
     }
 
     pub fn add_data(&mut self, data: &[u8]) {
@@ -82,7 +82,7 @@ impl FsVerityHasher {
 
     pub fn root_hash(&mut self) -> Sha256HashValue {
         if let Some(value) = self.value {
-            return value;
+            value
         } else {
             let mut value = [0u8; 32];
 
@@ -101,7 +101,7 @@ impl FsVerityHasher {
 
             self.value = Some(value);
 
-            return value;
+            value
         }
     }
 
@@ -135,6 +135,6 @@ impl FsVerityHasher {
         context.update([0; 32]);
         context.update([0; 32]); /* salt */
         context.update([0; 144]); /* reserved */
-        return context.finalize().into();
+        context.finalize().into()
     }
 }

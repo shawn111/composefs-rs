@@ -96,7 +96,7 @@ impl<'a> MountOptions<'a> {
     }
 
     fn mount(self, mountpoint: &str) -> std::io::Result<()> {
-        let image = std::fs::File::open(&self.image)?;
+        let image = std::fs::File::open(self.image)?;
 
         if let Some(expected) = self.digest {
             let measured: fsverity::Sha256HashValue = fsverity::ioctl::fs_ioc_measure_verity(&image)?;
