@@ -1,6 +1,3 @@
-mod fsverity;
-mod tmpdir;
-
 use rustix::mount::{
     FsMountFlags,
     FsOpenFlags,
@@ -19,6 +16,10 @@ use std::os::fd::{
     BorrowedFd,
     AsFd,
     AsRawFd
+};
+use composefs_experiments::{
+    fsverity,
+    tmpdir,
 };
 
 struct FsHandle {
@@ -40,10 +41,12 @@ impl AsFd for FsHandle {
 impl Drop for FsHandle {
     fn drop(&mut self) {
         let mut buffer = [0u8; 1024];
-        match rustix::io::read(&self.fd, &mut buffer) {
-            Err(_) => return, // ENODATA, among others?
-            Ok(0) => return,
-            Ok(size) => eprintln!("{}", String::from_utf8(buffer[0..size].to_vec()).unwrap()),
+        loop {
+            match rustix::io::read(&self.fd, &mut buffer) {
+                Err(_) => return, // ENODATA, among others?
+                Ok(0) => return,
+                Ok(size) => eprintln!("{}", String::from_utf8(buffer[0..size].to_vec()).unwrap()),
+            }
         }
     }
 }
@@ -75,6 +78,10 @@ struct MountOptions<'a> {
     verity: bool,
 }
 
+fn proc_self_fd<A: AsFd>(fd: &A) -> String {
+    format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd())
+}
+
 impl<'a> MountOptions<'a> {
     pub fn new(image: &'a str, basedir: &'a str) -> MountOptions<'a> {
         MountOptions { image, basedir, digest: None, verity: false }
@@ -99,7 +106,7 @@ impl<'a> MountOptions<'a> {
         }
 
         let erofs = FsHandle::open("erofs")?;
-        fsconfig_set_string(erofs.as_fd(), "source", format!("/proc/self/fd/{}", image.as_raw_fd()))?;
+        fsconfig_set_string(erofs.as_fd(), "source", proc_self_fd(&image))?;
         fsconfig_create(erofs.as_fd())?;
 
         let overlayfs = FsHandle::open("overlay")?;

@@ -1,5 +1,5 @@
 [package]
-name = "mountcfs"
+name = "composefs_experiments"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,3 +8,15 @@ hex = "0.4.3"
 rand = "0.8.5"
 rustix = { version = "0.38.37", features = ["fs", "mount"] }
 sha2 = "0.10.8"
+
+[profile.dev.package.sha2]
+# this is *really* slow otherwise
+opt-level = 3
+
+[lib]
+name = "composefs_experiments"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mount"
+path = "src/bin/mount.rs"
