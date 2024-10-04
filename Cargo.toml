@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.19", features = ["derive"] }
 hex = "0.4.3"
 rand = "0.8.5"
 rustix = { version = "0.38.37", features = ["fs", "mount"] }
@@ -16,7 +17,3 @@ opt-level = 3
 [lib]
 name = "composefs_experiments"
 path = "src/lib.rs"
-
-[[bin]]
-name = "mount"
-path = "src/bin/mount.rs"

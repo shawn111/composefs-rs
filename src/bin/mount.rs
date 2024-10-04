@@ -126,12 +126,35 @@ impl<'a> MountOptions<'a> {
     }
 }
 
+use clap::Parser;
+
+/// mount a composefs
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg()]
+    image: String,
+
+    #[arg()]
+    mountpoint: String,
+
+    #[arg(short, long)]
+    basedir: String,
+
+    #[arg(short, long)]
+    digest: Option<String>,
+}
+
 fn main() {
-    let mut options = MountOptions::new("/home/lis/src/mountcfs/cfs", "/home/lis/src/mountcfs/digest");
-    options.set_digest("77fc256436a40bc31088f212935130724e039e401e5ffc7936c6bdb750b1dfdb");
+    let args = Args::parse();
+
+    let mut options = MountOptions::new(&args.image, &args.basedir);
+    if let Some(expected) = &args.digest {
+        options.set_digest(expected);
+    }
     options.set_require_verity();
 
-    if let Err(x) = options.mount("mnt") {
+    if let Err(x) = options.mount(&args.mountpoint) {
         println!("err {}", x);
     }
 }
