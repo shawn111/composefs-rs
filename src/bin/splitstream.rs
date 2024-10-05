@@ -1,3 +1,5 @@
+use anyhow::Result;
+
 use composefs_experiments::{
     fsverity::Sha256HashValue,
     tar::split,
@@ -11,7 +13,7 @@ fn main() {
     split(
         &mut std::io::stdin(),
         &mut std::io::stdout(),
-        |data: &[u8]| -> std::io::Result<Sha256HashValue> {
+        |data: &[u8]| -> Result<Sha256HashValue> {
             repo.ensure_object(&data)
         }
     ).expect("split");

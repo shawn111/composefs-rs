@@ -28,6 +28,9 @@
  */
 
 use std::io::Write;
+
+use anyhow::Result;
+
 use crate::fsverity::Sha256HashValue;
 
 // utility class to help write splitstreams
@@ -42,13 +45,13 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
         SplitStreamWriter { inline_content: vec![], writer }
     }
 
-    fn write_fragment(writer: &mut W, size: usize, data: &[u8]) -> std::io::Result<()> {
+    fn write_fragment(writer: &mut W, size: usize, data: &[u8]) -> Result<()> {
         writer.write_all(&(size as u64).to_le_bytes())?;
-        writer.write_all(data)
+        Ok(writer.write_all(data)?)
     }
 
     /// flush any buffered inline data, taking new_value as the new value of the buffer
-    fn flush_inline(&mut self, new_value: Vec<u8>) -> std::io::Result<()> {
+    fn flush_inline(&mut self, new_value: Vec<u8>) -> Result<()> {
         if !self.inline_content.is_empty() {
             SplitStreamWriter::write_fragment(self.writer, self.inline_content.len(), &self.inline_content)?;
             self.inline_content = new_value;
@@ -65,7 +68,7 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
     /// write a reference to external data to the stream.  If the external data had padding in the
     /// stream which is not stored in the object then pass it here as well and it will be stored
     /// inline after the reference.
-    pub fn write_reference(&mut self, reference: Sha256HashValue, padding: Vec<u8>) -> std::io::Result<()> {
+    pub fn write_reference(&mut self, reference: Sha256HashValue, padding: Vec<u8>) -> Result<()> {
         // Flush the inline data before we store the external reference.  Any padding from the
         // external data becomes the start of a new inline block.
         self.flush_inline(padding)?;
@@ -73,7 +76,7 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
         SplitStreamWriter::write_fragment(self.writer, 0, &reference)
     }
 
-    pub fn done(&mut self) -> std::io::Result<()> {
+    pub fn done(&mut self) -> Result<()> {
         self.flush_inline(vec![])
     }
 }

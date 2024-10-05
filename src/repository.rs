@@ -9,6 +9,7 @@ use std::path::{
     PathBuf,
 };
 
+use anyhow::Result;
 use rustix::fs::{
     Access,
     AtFlags,
@@ -51,22 +52,22 @@ impl Drop for Repository {
 }
 
 impl Repository {
-    pub fn open_fd(repository: OwnedFd) -> std::io::Result<Repository> {
+    pub fn open_fd(repository: OwnedFd) -> Result<Repository> {
         flock(&repository, FlockOperation::LockShared)?;
         Ok(Repository { repository })
     }
 
-    pub fn open_path<P: rustix::path::Arg>(path: P) -> std::io::Result<Repository> {
+    pub fn open_path<P: rustix::path::Arg>(path: P) -> Result<Repository> {
         // O_PATH isn't enough because flock()
         Repository::open_fd(open(path, OFlags::RDONLY, Mode::empty())?)
     }
 
-    pub fn open_default() -> std::io::Result<Repository> {
+    pub fn open_default() -> Result<Repository> {
         let home = PathBuf::from(std::env::var("HOME").expect("$HOME must be set"));
         Repository::open_path(home.join(".var/lib/composefs"))
     }
 
-    fn ensure_parent<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+    fn ensure_parent<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         match path.as_ref().parent() {
             None => Ok(()),
             Some(path) if path == Path::new("") => Ok(()),
@@ -74,7 +75,7 @@ impl Repository {
         }
     }
 
-    fn ensure_dir<P: AsRef<Path>>(&self, dir: P) -> std::io::Result<()> {
+    fn ensure_dir<P: AsRef<Path>>(&self, dir: P) -> Result<()> {
         self.ensure_parent(&dir)?;
 
         match mkdirat(&self.repository, dir.as_ref(), 0o777.into()) {
@@ -83,7 +84,7 @@ impl Repository {
             Err(err) => Err(err.into())
         }
     }
-    pub fn ensure_object(&self, data: &[u8]) -> std::io::Result<Sha256HashValue> {
+    pub fn ensure_object(&self, data: &[u8]) -> Result<Sha256HashValue> {
         let digest = FsVerityHasher::hash(data);
         let dir = PathBuf::from(format!("objects/{:02x}", digest[0]));
         let file = dir.join(hex::encode(&digest[1..]));
@@ -118,17 +119,17 @@ impl Repository {
         Ok(digest)
     }
 
-    pub fn merge_splitstream<W: Write>(&self, name: &str, stream: &mut W) -> std::io::Result<()> {
+    pub fn merge_splitstream<W: Write>(&self, name: &str, stream: &mut W) -> Result<()> {
         Ok(())
     }
 
-    pub fn import_tar<R: Read>(&self, name: &str, tar_stream: &mut R) -> std::io::Result<()> {
+    pub fn import_tar<R: Read>(&self, name: &str, tar_stream: &mut R) -> Result<()> {
         let mut split_stream = zstd::stream::write::Encoder::new(vec![], 0)?;
 
         tar::split(
             tar_stream,
             &mut split_stream,
-            |data: &[u8]| -> std::io::Result<Sha256HashValue> {
+            |data: &[u8]| -> Result<Sha256HashValue> {
                 self.ensure_object(data)
         })?;
 
@@ -138,7 +139,7 @@ impl Repository {
 
     fn link_ref(
         &self, name: &str, category: &str, object_id: Sha256HashValue
-    ) -> std::io::Result<()> {
+    ) -> Result<()> {
         let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
         let category_path = format!("{}/{}", category, hex::encode(&object_id));
         let ref_path = format!("refs/{}", name);
@@ -148,7 +149,7 @@ impl Repository {
         Ok(())
     }
 
-    fn symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> std::io::Result<()> {
+    fn symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> Result<()> {
         let name = name.as_ref();
         let parent = name.parent()
             .expect("make_link() called for file directly in repo top-level");
@@ -163,7 +164,7 @@ impl Repository {
         Ok(symlinkat(target_path, &self.repository, name)?)
     }
 
-    pub fn gc(&self) -> std::io::Result<()> {
+    pub fn gc(&self) -> Result<()> {
         flock(&self.repository, FlockOperation::LockExclusive)?;
 
         // TODO: GC
@@ -171,7 +172,7 @@ impl Repository {
         Ok(flock(&self.repository, FlockOperation::LockShared)?)  // XXX: finally { } ?
     }
 
-    pub fn fsck(&self) -> std::io::Result<()> {
+    pub fn fsck(&self) -> Result<()> {
         Ok(())
     }
 }

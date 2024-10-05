@@ -1,4 +1,7 @@
 use std::io::{Read, Write};
+
+use anyhow::Result;
+
 use crate::fsverity::Sha256HashValue;
 use crate::splitstream::SplitStreamWriter;
 
@@ -8,23 +11,24 @@ struct TarHeader {
 
 impl TarHeader {
     // we can't use Read::read_exact() because we need to be able to detect EOF
-    fn read<R: Read>(reader: &mut R) -> std::io::Result<Option<TarHeader>> {
+    fn read<R: Read>(reader: &mut R) -> Result<Option<TarHeader>> {
         let mut header = TarHeader { data: [0u8; 512] };
         let mut todo: &mut [u8] = &mut header.data;
 
         while !todo.is_empty() {
             match reader.read(todo) {
                 Ok(0) => match todo.len() {
-                    512 => return Ok(None),
-                    _ => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+                    512 => return Ok(None),  // clean EOF
+                    _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?
                 },
                 Ok(n) => {
                     todo = &mut todo[n..];
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    continue;
                 }
                 Err(e) => {
-                    return Err(e);
+                    Err(e)?;
                 }
             }
         }
@@ -72,11 +76,11 @@ impl TarHeader {
 /// Splits the tar file from tar_stream into a Split Stream.  The store_data function is
 /// responsible for ensuring that "external data" is in the composefs repository and returns the
 /// fsverity hash value of that data.
-pub fn split<R: Read, W: Write, F: FnMut(&[u8]) -> std::io::Result<Sha256HashValue>>(
+pub fn split<R: Read, W: Write, F: FnMut(&[u8]) -> Result<Sha256HashValue>>(
     tar_stream: &mut R,
     split_stream: &mut W,
     mut store_data: F,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let mut writer = SplitStreamWriter::new(split_stream);
 
     while let Some(header) = TarHeader::read(tar_stream)? {

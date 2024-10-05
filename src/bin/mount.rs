@@ -1,3 +1,11 @@
+use std::os::fd::{
+    OwnedFd,
+    BorrowedFd,
+    AsFd,
+    AsRawFd
+};
+
+use anyhow::Result;
 use rustix::mount::{
     FsMountFlags,
     FsOpenFlags,
@@ -11,12 +19,7 @@ use rustix::mount::{
     move_mount,
     unmount,
 };
-use std::os::fd::{
-    OwnedFd,
-    BorrowedFd,
-    AsFd,
-    AsRawFd
-};
+
 use composefs_experiments::{
     fsverity,
     tmpdir,
@@ -27,7 +30,7 @@ struct FsHandle {
 }
 
 impl FsHandle {
-    pub fn open(name: &str) -> std::io::Result<FsHandle> {
+    pub fn open(name: &str) -> Result<FsHandle> {
         Ok(FsHandle { fd: fsopen(name, FsOpenFlags::FSOPEN_CLOEXEC)? })
     }
 }
@@ -56,7 +59,7 @@ struct TmpMount {
 }
 
 impl TmpMount {
-    pub fn mount(fs: BorrowedFd) -> std::io::Result<TmpMount> {
+    pub fn mount(fs: BorrowedFd) -> Result<TmpMount> {
         let tmp = tmpdir::TempDir::new()?;
         let mnt = fsmount(fs, FsMountFlags::FSMOUNT_CLOEXEC, MountAttrFlags::empty())?;
         move_mount(mnt.as_fd(), "", rustix::fs::CWD, &tmp.path, MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH)?;
@@ -95,7 +98,7 @@ impl<'a> MountOptions<'a> {
         self.digest = Some(digest);
     }
 
-    fn mount(self, mountpoint: &str) -> std::io::Result<()> {
+    fn mount(self, mountpoint: &str) -> Result<()> {
         let image = std::fs::File::open(self.image)?;
 
         if let Some(expected) = self.digest {

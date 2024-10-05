@@ -1,12 +1,17 @@
-use rand::distributions::{Alphanumeric, DistString};
 use std::path::PathBuf;
+
+use anyhow::{
+    Result,
+    bail,
+};
+use rand::distributions::{Alphanumeric, DistString};
 
 pub struct TempDir {
     pub path: PathBuf,
 }
 
 impl TempDir {
-    pub fn new() -> std::io::Result<TempDir>{
+    pub fn new() -> Result<TempDir>{
         let tmp = PathBuf::from("/tmp");
 
         for _ in 0 .. 26*26*26 {  // this is how many times glibc tries
@@ -15,11 +20,11 @@ impl TempDir {
             match std::fs::create_dir(&path) {
                 Ok(()) => return Ok(TempDir { path }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e)
+                Err(e) => Err(e)?
             }
         }
 
-        Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+        bail!("Failed to find free name for temporary directory");
     }
 }
 

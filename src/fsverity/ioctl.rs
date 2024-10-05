@@ -1,6 +1,9 @@
-use super::FsVerityHashValue;
 use std::os::fd::AsFd;
+
+use anyhow::Result;
 use rustix::ioctl;
+
+use super::FsVerityHashValue;
 
 // See /usr/include/linux/fsverity.h
 #[repr(C)]
@@ -19,7 +22,7 @@ pub struct FsVerityEnableArg {
 // #define FS_IOC_ENABLE_VERITY    _IOW('f', 133, struct fsverity_enable_arg)
 type FsIocEnableVerity = ioctl::WriteOpcode<b'f', 133, FsVerityEnableArg>;
 
-pub fn fs_ioc_enable_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> std::io::Result<()> {
+pub fn fs_ioc_enable_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> Result<()> {
     unsafe {
         ioctl::ioctl(fd, ioctl::Setter::<FsIocEnableVerity, FsVerityEnableArg>::new(FsVerityEnableArg {
             version: 1,
@@ -47,7 +50,7 @@ pub struct FsVerityDigest<F> {
 // #define FS_IOC_MEASURE_VERITY   _IORW('f', 134, struct fsverity_digest)
 type FsIocMeasureVerity = ioctl::ReadWriteOpcode<b'f', 134, FsVerityDigest<()>>;
 
-pub fn fs_ioc_measure_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> std::io::Result<H> {
+pub fn fs_ioc_measure_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> Result<H> {
     let digest_size = std::mem::size_of::<H>() as u16;
     let digest_algorithm = H::ALGORITHM as u16;
 
@@ -58,7 +61,7 @@ pub fn fs_ioc_measure_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> std::io::R
     }
 
     if digest.digest_algorithm != digest_algorithm || digest.digest_size != digest_size {
-        Err(std::io::Error::from(std::io::ErrorKind::InvalidData))
+        Err(std::io::Error::from(std::io::ErrorKind::InvalidData))?
     } else {
         Ok(digest.digest)
     }
