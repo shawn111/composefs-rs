@@ -72,7 +72,7 @@ impl TarHeader {
 /// Splits the tar file from tar_stream into a Split Stream.  The store_data function is
 /// responsible for ensuring that "external data" is in the composefs repository and returns the
 /// fsverity hash value of that data.
-pub fn split<R: Read, W: Write, F: FnMut(Vec<u8>) -> std::io::Result<Sha256HashValue>>(
+pub fn split<R: Read, W: Write, F: FnMut(&[u8]) -> std::io::Result<Sha256HashValue>>(
     tar_stream: &mut R,
     split_stream: &mut W,
     mut store_data: F,
@@ -92,7 +92,7 @@ pub fn split<R: Read, W: Write, F: FnMut(Vec<u8>) -> std::io::Result<Sha256HashV
             // non-empty regular file: store the data in the object store
             let actual_size = header.get_size();
             let padding = buffer.split_off(actual_size);
-            let reference = store_data(buffer)?;
+            let reference = store_data(&buffer)?;
             writer.write_reference(reference, padding)?;
         } else {
             // else: store the data inline in the split stream

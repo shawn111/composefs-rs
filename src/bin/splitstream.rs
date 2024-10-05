@@ -6,13 +6,13 @@ use composefs_experiments::{
 
 // produce a splitstream from a tar
 fn main() {
-    let repo = Repository::open("/home/lis/.var/lib/composefs").expect("open cfs-repo");
+    let repo = Repository::open_default().expect("open cfs-repo");
 
     split(
         &mut std::io::stdin(),
         &mut std::io::stdout(),
-        |data: Vec<u8>| -> std::io::Result<Sha256HashValue> {
-            repo.ensure_data(&data)
+        |data: &[u8]| -> std::io::Result<Sha256HashValue> {
+            repo.ensure_object(&data)
         }
     ).expect("split");
 }

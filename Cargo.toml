@@ -9,6 +9,7 @@ hex = "0.4.3"
 rand = "0.8.5"
 rustix = { version = "0.38.37", features = ["fs", "mount"] }
 sha2 = "0.10.8"
+zstd = "0.13.2"
 
 [profile.dev.package.sha2]
 # this is *really* slow otherwise
