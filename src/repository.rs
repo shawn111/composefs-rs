@@ -1,13 +1,17 @@
-use std::io::ErrorKind;
-use std::io::{
-    Read,
-    Write,
-};
-use std::fs::File;
-use std::os::fd::OwnedFd;
-use std::path::{
-    Path,
-    PathBuf,
+use std::{
+    collections::HashSet,
+    ffi::CStr,
+    fs::File,
+    io::{
+        ErrorKind,
+        Read,
+        Write,
+    },
+    os::fd::OwnedFd,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use anyhow::{
@@ -15,6 +19,8 @@ use anyhow::{
     bail,
 };
 use rustix::fs::{
+    FileType,
+    Dir,
     Access,
     AtFlags,
     CWD,
@@ -28,6 +34,7 @@ use rustix::fs::{
     mkdirat,
     open,
     openat,
+    readlinkat,
     symlinkat,
 };
 
@@ -42,7 +49,10 @@ use crate::{
         },
     },
     mount::mount_fd,
-    splitstream::splitstream_merge,
+    splitstream::{
+        splitstream_merge,
+        splitstream_objects,
+    },
     tar,
     util::proc_self_fd,
 };
@@ -226,10 +236,133 @@ impl Repository {
         Ok(symlinkat(target_path, &self.repository, name)?)
     }
 
+    fn read_symlink_hashvalue(dirfd: &OwnedFd, name: &CStr) -> Result<Sha256HashValue> {
+        let link_content = readlinkat(&dirfd, name, [])?;
+        let link_bytes = link_content.to_bytes();
+        let link_size = link_bytes.len();
+        // XXX: check correctness of leading ../?
+        // XXX: or is that something for fsck?
+        if link_size > 64 {
+            let mut value = Sha256HashValue::EMPTY;
+            hex::decode_to_slice(&link_bytes[link_size-64..link_size], &mut value)?;
+            Ok(value)
+        } else {
+            bail!("symlink has wrong format")
+        }
+    }
+
+    fn walk_symlinkdir(fd: OwnedFd, mut objects: &mut HashSet<Sha256HashValue>) -> Result<()> {
+        for item in Dir::read_from(&fd)? {
+            match item {
+                Err(x) => Err(x)?,
+                Ok(entry) => {
+                    // NB: the underlying filesystem must support returning filetype via direntry
+                    // that's a reasonable assumption, since it must also support fsverity...
+                    match entry.file_type() {
+                        FileType::Directory => {
+                            let filename = entry.file_name();
+                            if filename != c"." && filename != c".." {
+                                let dirfd = openat(&fd, filename, OFlags::RDONLY, Mode::empty())?;
+                                Repository::walk_symlinkdir(dirfd, &mut objects)?;
+                            }
+                        },
+                        FileType::Symlink => {
+                            objects.insert(Repository::read_symlink_hashvalue(&fd, &entry.file_name())?);
+                        },
+                        _ => {
+                            bail!("Unexpected file type encountered");
+                        },
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn openat(&self, name: &str, flags: OFlags) -> Result<OwnedFd> {
+        Ok(openat(&self.repository, name, flags, Mode::empty())?)
+    }
+
+    fn gc_category(&self, category: &str) -> Result<HashSet<Sha256HashValue>> {
+        let mut objects = HashSet::<Sha256HashValue>::new();
+
+        let category_fd = self.openat(&category, OFlags::RDONLY | OFlags::DIRECTORY)?;
+
+        let refs = openat(&category_fd, "refs", OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty())?;
+        Repository::walk_symlinkdir(refs, &mut objects)?;
+
+        for item in Dir::read_from(&category_fd)? {
+            match item {
+                Err(x) => Err(x)?,
+                Ok(entry) => {
+                    let filename = entry.file_name();
+                    if filename != c"refs" && filename != c"." && filename != c".." {
+                        if entry.file_type() != FileType::Symlink {
+                            bail!("category directory contains non-symlink");
+                        }
+                        let mut value = Sha256HashValue::EMPTY;
+                        hex::decode_to_slice(&filename.to_bytes(), &mut value)?;
+
+                        if !objects.contains(&value) {
+                            println!("rm {}/{:?}", category, filename);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(objects)
+    }
+
     pub fn gc(&self) -> Result<()> {
         flock(&self.repository, FlockOperation::LockExclusive)?;
 
-        // TODO: GC
+        let mut objects = HashSet::new();
+
+        for object in self.gc_category("images")? {
+            println!("{} lives as an image", hex::encode(object));
+            objects.insert(object);
+
+            // TODO: composefs-info objects
+        }
+
+        for object in self.gc_category("streams")? {
+            println!("{} lives as a stream", hex::encode(object));
+            objects.insert(object);
+
+            let file = File::from(self.open_object(object)?);
+            let mut split_stream = zstd::stream::read::Decoder::new(file)?;
+            splitstream_objects(
+                &mut split_stream,
+                |obj: Sha256HashValue| {
+                    println!("   with {}", hex::encode(obj));
+                    objects.insert(obj);
+                }
+            )?;
+        }
+
+        for first_byte in 0x0..=0xff {
+            let dirfd = self.openat(&format!("objects/{first_byte:02x}"), OFlags::RDONLY | OFlags::DIRECTORY)?;
+            for item in Dir::new(dirfd)? {
+                match item {
+                    Err(e) => Err(e)?,
+                    Ok(entry) => {
+                        let filename = entry.file_name();
+                        if filename != c"." && filename != c".." {
+                            let mut value = Sha256HashValue::EMPTY;
+                            value[0] = first_byte;
+                            hex::decode_to_slice(filename.to_bytes(), &mut value[1..])?;
+                            if !objects.contains(&value) {
+                                println!("rm objects/{first_byte:02x}/{filename:?}");
+                            } else {
+                                println!("# objects/{first_byte:02x}/{filename:?} lives");
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(flock(&self.repository, FlockOperation::LockShared)?)  // XXX: finally { } ?
     }

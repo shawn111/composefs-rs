@@ -23,8 +23,11 @@ enum Command {
     Transaction,
     /// Reconstitutes a split stream and writes it to stdout
     Cat {
-        reference: String,
+        /// the name of the stream to cat, either a sha256 digest or prefixed with 'ref/'
+        name: String,
     },
+    /// Perform garbage collection
+    GC,
     /// Imports a composefs image (unsafe!)
     ImportImage {
         reference: String,
@@ -34,9 +37,11 @@ enum Command {
         reference: String,
         tarfile: Option<PathBuf>,
     },
-    /// Mounts a composefs
+    /// Mounts a composefs, possibly enforcing fsverity of the image
     Mount {
+        /// the name of the image to mount, either a sha256 digest or prefixed with 'ref/'
         name: String,
+        /// the mountpoint
         mountpoint: String,
     },
 }
@@ -56,8 +61,8 @@ fn main() {
                 std::thread::park();
             }
         },
-        Command::Cat { reference } => {
-            repo.merge_splitstream(&reference, &mut std::io::stdout()).expect("merge");
+        Command::Cat { name } => {
+            repo.merge_splitstream(&name, &mut std::io::stdout()).expect("merge");
         },
         Command::ImportImage { reference, } => {
             repo.import_image(&reference, &mut std::io::stdin()).expect("image-import");
@@ -68,5 +73,8 @@ fn main() {
         Command::Mount { name, mountpoint } => {
             repo.mount(&name, &mountpoint).expect("mount");
         },
+        Command::GC => {
+            repo.gc().expect("gc");
+        }
     }
 }

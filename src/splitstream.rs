@@ -99,7 +99,6 @@ fn read_u64_le<R: Read>(reader: &mut R) -> Result<Option<u64>> {
     }
 }
 
-// TODO: reader side...
 pub fn splitstream_merge<R: Read, W: Write, F: FnMut(Sha256HashValue) -> Result<Vec<u8>>>(
     split_stream: &mut R, result: &mut W, mut load_data: F,
 ) -> Result<()> {
@@ -113,6 +112,23 @@ pub fn splitstream_merge<R: Read, W: Write, F: FnMut(Sha256HashValue) -> Result<
             let mut data = vec![0u8; size as usize]; // TODO: bzzt bzzt
             split_stream.read_exact(&mut data)?;
             result.write_all(&data)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn splitstream_objects<R: Read, F: FnMut(Sha256HashValue)>(
+    split_stream: &mut R, mut callback: F
+) -> Result<()> {
+    while let Some(size) = read_u64_le(split_stream)? {
+        if size == 0 {
+            let mut hash = Sha256HashValue::EMPTY;
+            split_stream.read_exact(&mut hash)?;
+            callback(hash);
+        } else {
+            let mut discard = vec![0u8; size as usize]; // TODO: bzzt bzzt
+            split_stream.read_exact(&mut discard)?;
         }
     }
 
