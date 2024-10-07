@@ -3,13 +3,17 @@ use std::io::{
     Read,
     Write,
 };
+use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::path::{
     Path,
     PathBuf,
 };
 
-use anyhow::Result;
+use anyhow::{
+    Result,
+    bail,
+};
 use rustix::fs::{
     Access,
     AtFlags,
@@ -29,6 +33,7 @@ use rustix::fs::{
 
 use crate::{
     fsverity::{
+        FsVerityHashValue,
         Sha256HashValue,
         digest::FsVerityHasher,
         ioctl::{
@@ -36,6 +41,7 @@ use crate::{
             fs_ioc_measure_verity,
         },
     },
+    splitstream::splitstream_merge,
     tar,
     util::proc_self_fd,
 };
@@ -119,7 +125,49 @@ impl Repository {
         Ok(digest)
     }
 
+    pub fn open_with_verity(&self, filename: &str, expected_verity: Sha256HashValue) -> Result<OwnedFd> {
+        let fd = openat(&self.repository, filename, OFlags::RDONLY, Mode::empty())?;
+        let measured_verity: Sha256HashValue = fs_ioc_measure_verity(&fd)?;
+        if measured_verity != expected_verity {
+            bail!("bad verity!")
+        } else {
+            Ok(fd)
+        }
+    }
+
+    /// category is like "streams" or "images"
+    /// name is like "refs/1000/user/xyz" (with '/') or a sha256 hex hash value (without '/')
+    fn open_in_category(&self, category: &str, name: &str) -> Result<OwnedFd> {
+        let filename = format!("{}/{}", category, name);
+
+        if name.contains("/") {
+            // no fsverity checking on this path
+            Ok(openat(&self.repository, filename, OFlags::RDONLY, Mode::empty())?)
+        } else {
+            // this must surely be a hash value, and we want to verify it
+            let mut hash = Sha256HashValue::EMPTY;
+            hex::decode_to_slice(name, &mut hash)?;
+            self.open_with_verity(&filename, hash)
+        }
+    }
+
+    fn open_object(&self, id: Sha256HashValue) -> Result<OwnedFd> {
+        self.open_with_verity(&format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..])), id)
+    }
+
     pub fn merge_splitstream<W: Write>(&self, name: &str, stream: &mut W) -> Result<()> {
+        let file = File::from(self.open_in_category("streams", name)?);
+        let mut split_stream = zstd::stream::read::Decoder::new(file)?;
+        splitstream_merge(
+            &mut split_stream,
+            stream,
+            |id: Sha256HashValue| -> Result<Vec<u8>> {
+                let mut data = vec![];
+                File::from(self.open_object(id)?).read_to_end(&mut data)?;
+                Ok(data)
+            }
+        )?;
+
         Ok(())
     }
 
@@ -131,7 +179,8 @@ impl Repository {
             &mut split_stream,
             |data: &[u8]| -> Result<Sha256HashValue> {
                 self.ensure_object(data)
-        })?;
+            }
+        )?;
 
         let object_id = self.ensure_object(&split_stream.finish()?)?;
         self.link_ref(name, "streams", object_id)
@@ -142,7 +191,7 @@ impl Repository {
     ) -> Result<()> {
         let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
         let category_path = format!("{}/{}", category, hex::encode(&object_id));
-        let ref_path = format!("refs/{}", name);
+        let ref_path = format!("{}/refs/{}", category, name);
 
         self.symlink(&ref_path, &category_path)?;
         self.symlink(&category_path, &object_path)?;

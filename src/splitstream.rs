@@ -27,11 +27,20 @@
  * That's it, really.  There's no header.  The file is over when there's no more blocks.
  */
 
-use std::io::Write;
+use std::io::{
+    Read,
+    Write,
+};
 
 use anyhow::Result;
 
-use crate::fsverity::Sha256HashValue;
+use crate::{
+    fsverity::{
+        FsVerityHashValue,
+        Sha256HashValue,
+    },
+    util::read_exactish,
+};
 
 // utility class to help write splitstreams
 pub struct SplitStreamWriter<'w, W: Write> {
@@ -81,4 +90,31 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
     }
 }
 
+fn read_u64_le<R: Read>(reader: &mut R) -> Result<Option<u64>> {
+    let mut buf = [0u8; 8];
+    if read_exactish(reader, &mut buf)? {
+        Ok(Some(u64::from_le_bytes(buf)))
+    } else {
+        Ok(None)
+    }
+}
+
 // TODO: reader side...
+pub fn splitstream_merge<R: Read, W: Write, F: FnMut(Sha256HashValue) -> Result<Vec<u8>>>(
+    split_stream: &mut R, result: &mut W, mut load_data: F,
+) -> Result<()> {
+    while let Some(size) = read_u64_le(split_stream)? {
+        if size == 0 {
+            let mut hash = Sha256HashValue::EMPTY;
+            split_stream.read_exact(&mut hash)?;
+            let data = load_data(hash)?;
+            result.write_all(&data)?;
+        } else {
+            let mut data = vec![0u8; size as usize]; // TODO: bzzt bzzt
+            split_stream.read_exact(&mut data)?;
+            result.write_all(&data)?;
+        }
+    }
+
+    Ok(())
+}

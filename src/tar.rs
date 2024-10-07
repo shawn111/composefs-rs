@@ -2,8 +2,11 @@ use std::io::{Read, Write};
 
 use anyhow::Result;
 
-use crate::fsverity::Sha256HashValue;
-use crate::splitstream::SplitStreamWriter;
+use crate::{
+    fsverity::Sha256HashValue,
+    splitstream::SplitStreamWriter,
+    util::read_exactish,
+};
 
 struct TarHeader {
     data: [u8; 512],
@@ -13,28 +16,12 @@ impl TarHeader {
     // we can't use Read::read_exact() because we need to be able to detect EOF
     fn read<R: Read>(reader: &mut R) -> Result<Option<TarHeader>> {
         let mut header = TarHeader { data: [0u8; 512] };
-        let mut todo: &mut [u8] = &mut header.data;
-
-        while !todo.is_empty() {
-            match reader.read(todo) {
-                Ok(0) => match todo.len() {
-                    512 => return Ok(None),  // clean EOF
-                    _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?
-                },
-                Ok(n) => {
-                    todo = &mut todo[n..];
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    continue;
-                }
-                Err(e) => {
-                    Err(e)?;
-                }
-            }
+        if read_exactish(reader, &mut header.data)? {
+            Ok(Some(header))
+        } else {
+            Ok(None)
         }
-
-        Ok(Some(header))
-    }
+     }
 
     fn get_size(&self) -> usize {
         let size_field = &self.data[124..124 + 12];
