@@ -14,7 +14,7 @@ fn main() {
         &mut std::io::stdin(),
         &mut std::io::stdout(),
         |data: &[u8]| -> Result<Sha256HashValue> {
-            repo.ensure_object(&data)
+            repo.ensure_object(data)
         }
     ).expect("split");
 }

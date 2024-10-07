@@ -41,6 +41,7 @@ use crate::{
             fs_ioc_measure_verity,
         },
     },
+    mount::mount_fd,
     splitstream::splitstream_merge,
     tar,
     util::proc_self_fd,
@@ -48,6 +49,7 @@ use crate::{
 
 pub struct Repository {
     repository: OwnedFd,
+    path: String,
 }
 
 impl Drop for Repository {
@@ -58,19 +60,16 @@ impl Drop for Repository {
 }
 
 impl Repository {
-    pub fn open_fd(repository: OwnedFd) -> Result<Repository> {
-        flock(&repository, FlockOperation::LockShared)?;
-        Ok(Repository { repository })
-    }
-
-    pub fn open_path<P: rustix::path::Arg>(path: P) -> Result<Repository> {
+    pub fn open_path(path: String) -> Result<Repository> {
         // O_PATH isn't enough because flock()
-        Repository::open_fd(open(path, OFlags::RDONLY, Mode::empty())?)
+        let repository = open(&path, OFlags::RDONLY, Mode::empty())?;
+        flock(&repository, FlockOperation::LockShared)?;
+        Ok(Repository { repository, path })
     }
 
     pub fn open_default() -> Result<Repository> {
-        let home = PathBuf::from(std::env::var("HOME").expect("$HOME must be set"));
-        Repository::open_path(home.join(".var/lib/composefs"))
+        let home = std::env::var("HOME").expect("$HOME must be set");
+        Repository::open_path(format!("{}/.var/lib/composefs", home))
     }
 
     fn ensure_parent<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -186,11 +185,25 @@ impl Repository {
         self.link_ref(name, "streams", object_id)
     }
 
+    /// this function is not safe for untrusted users
+    pub fn import_image<R: Read>(&self, name: &str, image: &mut R) -> Result<()> {
+        let mut data = vec![];
+        image.read_to_end(&mut data)?;
+        let object_id = self.ensure_object(&data)?;
+        self.link_ref(name, "images", object_id)
+    }
+
+    pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
+        let image = self.open_in_category("images", name)?;
+        let object_path = format!("{}/objects", self.path);
+        mount_fd(image, &object_path, mountpoint)
+    }
+
     fn link_ref(
         &self, name: &str, category: &str, object_id: Sha256HashValue
     ) -> Result<()> {
         let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
-        let category_path = format!("{}/{}", category, hex::encode(&object_id));
+        let category_path = format!("{}/{}", category, hex::encode(object_id));
         let ref_path = format!("{}/refs/{}", category, name);
 
         self.symlink(&ref_path, &category_path)?;
@@ -202,7 +215,7 @@ impl Repository {
         let name = name.as_ref();
         let parent = name.parent()
             .expect("make_link() called for file directly in repo top-level");
-        self.ensure_dir(&parent)?;
+        self.ensure_dir(parent)?;
 
         let mut target_path = PathBuf::new();
         for _ in parent.iter() {
