@@ -8,7 +8,7 @@ use composefs_experiments::{
 
 // produce a splitstream from a tar
 fn main() {
-    let repo = Repository::open_default().expect("open cfs-repo");
+    let repo = Repository::open_user().expect("open cfs-repo");
 
     split(
         &mut std::io::stdin(),

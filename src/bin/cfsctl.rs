@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use composefs_experiments::repository::Repository;
@@ -9,8 +10,12 @@ use composefs_experiments::repository::Repository;
 #[derive(Debug, Parser)]
 #[clap(name = "cfsctl", version)]
 pub struct App {
-    #[clap(long)]
+    #[clap(long, group="repopath")]
     repo: Option<String>,
+    #[clap(long, group="repopath")]
+    user: bool,
+    #[clap(long, group="repopath")]
+    system: bool,
 
     #[clap(subcommand)]
     cmd: Command,
@@ -46,13 +51,22 @@ enum Command {
     },
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = App::parse();
 
-    let repo = match args.repo {
-        None => Repository::open_default(),
-        Some(path) => Repository::open_path(path),
-    }.expect("bzzt");
+    let repo = (
+        if let Some(path) = args.repo {
+            Repository::open_path(path)
+        } else if args.system {
+            Repository::open_system()
+        } else if args.user {
+            Repository::open_user()
+        } else if rustix::process::getuid().is_root() {
+            Repository::open_system()
+        } else {
+            Repository::open_user()
+        }
+    )?;
 
     match args.cmd {
         Command::Transaction => {
@@ -62,19 +76,19 @@ fn main() {
             }
         },
         Command::Cat { name } => {
-            repo.merge_splitstream(&name, &mut std::io::stdout()).expect("merge");
+            repo.merge_splitstream(&name, &mut std::io::stdout())
         },
         Command::ImportImage { reference, } => {
-            repo.import_image(&reference, &mut std::io::stdin()).expect("image-import");
+            repo.import_image(&reference, &mut std::io::stdin())
         },
         Command::ImportTar { reference, tarfile: _ } => {
-            repo.import_tar(&reference, &mut std::io::stdin()).expect("tar-import");
+            repo.import_tar(&reference, &mut std::io::stdin())
         },
         Command::Mount { name, mountpoint } => {
-            repo.mount(&name, &mountpoint).expect("mount");
+            repo.mount(&name, &mountpoint)
         },
         Command::GC => {
-            repo.gc().expect("gc");
+            repo.gc()
         }
     }
 }

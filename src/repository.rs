@@ -16,6 +16,7 @@ use std::{
 };
 
 use anyhow::{
+    Context,
     Result,
     bail,
 };
@@ -73,14 +74,24 @@ impl Drop for Repository {
 impl Repository {
     pub fn open_path(path: String) -> Result<Repository> {
         // O_PATH isn't enough because flock()
-        let repository = open(&path, OFlags::RDONLY, Mode::empty())?;
-        flock(&repository, FlockOperation::LockShared)?;
+        let repository = open(&path, OFlags::RDONLY, Mode::empty())
+            .with_context(|| format!("Cannot open composefs repository '{path}'"))?;
+
+        flock(&repository, FlockOperation::LockShared).
+            with_context(|| format!("Cannot lock repository '{path}'"))?;
+
         Ok(Repository { repository, path })
     }
 
-    pub fn open_default() -> Result<Repository> {
-        let home = std::env::var("HOME").expect("$HOME must be set");
+    pub fn open_user() -> Result<Repository> {
+        let home = std::env::var("HOME")
+            .with_context(|| "$HOME must be set when in user mode")?;
+
         Repository::open_path(format!("{}/.var/lib/composefs", home))
+    }
+
+    pub fn open_system() -> Result<Repository> {
+        Repository::open_path("/sysroot/composefs".to_string())
     }
 
     fn ensure_parent<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -100,6 +111,7 @@ impl Repository {
             Err(err) => Err(err.into())
         }
     }
+
     pub fn ensure_object(&self, data: &[u8]) -> Result<Sha256HashValue> {
         let digest = FsVerityHasher::hash(data);
         let dir = PathBuf::from(format!("objects/{:02x}", digest[0]));
@@ -238,7 +250,7 @@ impl Repository {
     }
 
     fn read_symlink_hashvalue(dirfd: &OwnedFd, name: &CStr) -> Result<Sha256HashValue> {
-        let link_content = readlinkat(&dirfd, name, [])?;
+        let link_content = readlinkat(dirfd, name, [])?;
         let link_bytes = link_content.to_bytes();
         let link_size = link_bytes.len();
         // XXX: check correctness of leading ../?
@@ -252,7 +264,7 @@ impl Repository {
         }
     }
 
-    fn walk_symlinkdir(fd: OwnedFd, mut objects: &mut HashSet<Sha256HashValue>) -> Result<()> {
+    fn walk_symlinkdir(fd: OwnedFd, objects: &mut HashSet<Sha256HashValue>) -> Result<()> {
         for item in Dir::read_from(&fd)? {
             match item {
                 Err(x) => Err(x)?,
@@ -264,11 +276,11 @@ impl Repository {
                             let filename = entry.file_name();
                             if filename != c"." && filename != c".." {
                                 let dirfd = openat(&fd, filename, OFlags::RDONLY, Mode::empty())?;
-                                Repository::walk_symlinkdir(dirfd, &mut objects)?;
+                                Repository::walk_symlinkdir(dirfd, objects)?;
                             }
                         },
                         FileType::Symlink => {
-                            objects.insert(Repository::read_symlink_hashvalue(&fd, &entry.file_name())?);
+                            objects.insert(Repository::read_symlink_hashvalue(&fd, entry.file_name())?);
                         },
                         _ => {
                             bail!("Unexpected file type encountered");
@@ -288,7 +300,7 @@ impl Repository {
     fn gc_category(&self, category: &str) -> Result<HashSet<Sha256HashValue>> {
         let mut objects = HashSet::<Sha256HashValue>::new();
 
-        let category_fd = self.openat(&category, OFlags::RDONLY | OFlags::DIRECTORY)?;
+        let category_fd = self.openat(category, OFlags::RDONLY | OFlags::DIRECTORY)?;
 
         let refs = openat(&category_fd, "refs", OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty())?;
         Repository::walk_symlinkdir(refs, &mut objects)?;
@@ -303,7 +315,7 @@ impl Repository {
                             bail!("category directory contains non-symlink");
                         }
                         let mut value = Sha256HashValue::EMPTY;
-                        hex::decode_to_slice(&filename.to_bytes(), &mut value)?;
+                        hex::decode_to_slice(filename.to_bytes(), &mut value)?;
 
                         if !objects.contains(&value) {
                             println!("rm {}/{:?}", category, filename);
@@ -344,7 +356,7 @@ impl Repository {
                 let mut value = Sha256HashValue::EMPTY;
                 hex::decode_to_slice(&line[0..2], &mut value[0..1])?;
                 hex::decode_to_slice(&line[3..65], &mut value[1..32])?;
-                println!("    with {}", hex::encode(&value));
+                println!("    with {}", hex::encode(value));
                 objects.insert(value);
             }
         }
