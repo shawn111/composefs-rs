@@ -12,6 +12,7 @@ use std::{
         Path,
         PathBuf,
     },
+    process::Command,
 };
 
 use anyhow::{
@@ -324,7 +325,28 @@ impl Repository {
             println!("{} lives as an image", hex::encode(object));
             objects.insert(object);
 
-            // TODO: composefs-info objects
+            // composefs-info mmaps the file, so pipes aren't normally OK but we pass the
+            // underlying file directly, which works.
+            let output = Command::new("composefs-info")
+                .stdin(File::from(self.open_object(object)?))
+                .args(["objects", "/proc/self/fd/0"])
+                .output()?
+                .stdout;
+
+            if output.len() % 66 != 0 {
+                bail!("composefs-info gave invalid output (wrong size)");
+            }
+
+            for line in output.chunks_exact(66) {
+                if line[2] != b'/' || line[65] != b'\n' {
+                    bail!("composefs-info gave invalid output");
+                }
+                let mut value = Sha256HashValue::EMPTY;
+                hex::decode_to_slice(&line[0..2], &mut value[0..1])?;
+                hex::decode_to_slice(&line[3..65], &mut value[1..32])?;
+                println!("    with {}", hex::encode(&value));
+                objects.insert(value);
+            }
         }
 
         for object in self.gc_category("streams")? {
