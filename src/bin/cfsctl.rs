@@ -42,6 +42,11 @@ enum Command {
         reference: String,
         tarfile: Option<PathBuf>,
     },
+    /// Lists the contents of a tar stream
+    Ls {
+        /// the name of the stream
+        name: String,
+    },
     /// Mounts a composefs, possibly enforcing fsverity of the image
     Mount {
         /// the name of the image to mount, either a sha256 digest or prefixed with 'ref/'
@@ -83,6 +88,9 @@ fn main() -> Result<()> {
         },
         Command::ImportTar { reference, tarfile: _ } => {
             repo.import_tar(&reference, &mut std::io::stdin())
+        },
+        Command::Ls { name } => {
+            repo.ls(&name)
         },
         Command::Mount { name, mountpoint } => {
             repo.mount(&name, &mountpoint)

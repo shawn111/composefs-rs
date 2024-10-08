@@ -27,12 +27,18 @@
  * That's it, really.  There's no header.  The file is over when there's no more blocks.
  */
 
-use std::io::{
-    Read,
-    Write,
+use std::{
+    collections::VecDeque,
+    io::{
+        Read,
+        Write,
+    },
 };
 
-use anyhow::Result;
+use anyhow::{
+    Result,
+    bail,
+};
 
 use crate::{
     fsverity::{
@@ -46,7 +52,6 @@ use crate::{
 pub struct SplitStreamWriter<'w, W: Write> {
     inline_content: Vec<u8>,
     writer: &'w mut W
-
 }
 
 impl<'w, W: Write> SplitStreamWriter<'w, W> {
@@ -90,28 +95,93 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
     }
 }
 
-fn read_u64_le<R: Read>(reader: &mut R) -> Result<Option<u64>> {
+pub enum SplitStreamData {
+    Inline(Vec<u8>),
+    External(Sha256HashValue),
+}
+
+pub fn read_splitstream_chunk<R: Read>(reader: &mut R) -> Result<Option<SplitStreamData>> {
     let mut buf = [0u8; 8];
-    if read_exactish(reader, &mut buf)? {
-        Ok(Some(u64::from_le_bytes(buf)))
-    } else {
-        Ok(None)
+    match read_exactish(reader, &mut buf)? {
+        false => Ok(None),
+        true => match u64::from_le_bytes(buf) as usize {
+            0 => {
+                let mut data = Sha256HashValue::EMPTY;
+                reader.read_exact(&mut data)?;
+                Ok(Some(SplitStreamData::External(data)))
+            },
+            size => {
+                let mut data = vec![0u8; size];
+                reader.read_exact(&mut data)?;
+                Ok(Some(SplitStreamData::Inline(data)))
+            }
+        }
+    }
+}
+
+// utility class to help read splitstreams
+pub struct SplitStreamReader<'w, R: Read> {
+    inline_content: VecDeque<u8>,
+    reader: &'w mut R
+}
+
+impl<'r, R: Read> SplitStreamReader<'r, R> {
+    pub fn new(reader: &'r mut R) -> SplitStreamReader<'r, R> {
+        SplitStreamReader { inline_content: VecDeque::new(), reader }
+    }
+
+    /// assumes that the data cannot be split across chunks
+    pub fn read_inline_exact(&mut self, data: &mut [u8]) -> Result<bool> {
+        if self.inline_content.is_empty() {
+            match read_splitstream_chunk(&mut self.reader)? {
+                None => { return Ok(false); }
+                Some(SplitStreamData::Inline(data)) => { self.inline_content = data.into() },
+                Some(SplitStreamData::External(_)) => { bail!("Expecting inline data but found external chunk") }
+            }
+        }
+
+        self.inline_content.read_exact(data)?;
+        Ok(true)
+    }
+
+    pub fn read_exact(&mut self, actual_size: usize, stored_size: usize) -> Result<SplitStreamData> {
+        if self.inline_content.is_empty() {
+            match read_splitstream_chunk(&mut self.reader)? {
+                None => { bail!("Unexpected EOF") },
+                Some(SplitStreamData::Inline(data)) => { self.inline_content = data.into() },
+                Some(ext) => {
+                    if actual_size != stored_size {
+                        // need to eat the padding...
+                        match read_splitstream_chunk(&mut self.reader)? {
+                            None => { bail!("bad eof") },
+                            Some(SplitStreamData::Inline(data)) => { self.inline_content = data.into() },
+                            Some(SplitStreamData::External(_)) => { bail!("Expecting inline data but found external chunk") }
+                        }
+                        // TODO: make this suck less
+                        let mut padding = vec![0u8; stored_size - actual_size];
+                        self.inline_content.read_exact(&mut padding)?;
+                    }
+
+                    return Ok(ext)
+                }
+            }
+        }
+
+        // must be inline
+        let mut data = vec![0u8; stored_size];
+        self.inline_content.read_exact(&mut data)?;
+        data.truncate(actual_size);
+        Ok(SplitStreamData::Inline(data))
     }
 }
 
 pub fn splitstream_merge<R: Read, W: Write, F: FnMut(Sha256HashValue) -> Result<Vec<u8>>>(
     split_stream: &mut R, result: &mut W, mut load_data: F,
 ) -> Result<()> {
-    while let Some(size) = read_u64_le(split_stream)? {
-        if size == 0 {
-            let mut hash = Sha256HashValue::EMPTY;
-            split_stream.read_exact(&mut hash)?;
-            let data = load_data(hash)?;
-            result.write_all(&data)?;
-        } else {
-            let mut data = vec![0u8; size as usize]; // TODO: bzzt bzzt
-            split_stream.read_exact(&mut data)?;
-            result.write_all(&data)?;
+    while let Some(data) = read_splitstream_chunk(split_stream)? {
+        match data {
+            SplitStreamData::Inline(data) => result.write_all(&data)?,
+            SplitStreamData::External(id) => result.write_all(&load_data(id)?)?,
         }
     }
 
@@ -121,14 +191,10 @@ pub fn splitstream_merge<R: Read, W: Write, F: FnMut(Sha256HashValue) -> Result<
 pub fn splitstream_objects<R: Read, F: FnMut(Sha256HashValue)>(
     split_stream: &mut R, mut callback: F
 ) -> Result<()> {
-    while let Some(size) = read_u64_le(split_stream)? {
-        if size == 0 {
-            let mut hash = Sha256HashValue::EMPTY;
-            split_stream.read_exact(&mut hash)?;
-            callback(hash);
-        } else {
-            let mut discard = vec![0u8; size as usize]; // TODO: bzzt bzzt
-            split_stream.read_exact(&mut discard)?;
+    while let Some(data) = read_splitstream_chunk(split_stream)? {
+        match data {
+            SplitStreamData::Inline(_) => { /* no op */ },
+            SplitStreamData::External(id) => callback(id)
         }
     }
 

@@ -216,6 +216,12 @@ impl Repository {
         self.link_ref(name, "images", object_id)
     }
 
+    pub fn ls(self, name: &str) -> Result<()> {
+        let file = File::from(self.open_in_category("streams", name)?);
+        let mut split_stream = zstd::stream::read::Decoder::new(file)?;
+        crate::tar::ls(&mut split_stream)
+    }
+
     pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
         let image = self.open_in_category("images", name)?;
         let object_path = format!("{}/objects", self.path);
