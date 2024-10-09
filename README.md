@@ -1,16 +1,22 @@
 # composefs experiments in rust
 
-This is a set of experiments attempting to implement dramatically-simplified
-versions of some of the tools from
-[composefs](https://github.com/containers/composefs) in a legacy-free way using
-pure Rust.
+This is a set of experiments exploring ideas around how to structure an on-disk
+[composefs](https://github.com/containers/composefs) repository.
 
-It depends on (currently pre-release) Linux 6.12.
+The main consumables here are:
 
-We use [`rustix`](https://github.com/bytecodealliance/rustix) because it's
-awesome, but otherwise try to stick to `std::` and the libraries listed in,
-[`rust-lang`](https://crates.io/teams/github:rust-lang:libs), and
-[`rust-lang-nursery`](https://crates.io/teams/github:rust-lang-nursery:libs).
+ - a [`Repository`](src/repository.rs) class representing an on-disk composefs
+   repository and the operations that can be performed on it.  See the
+   [repository format documentation](doc/repository.md).
+
+ - [`cfsctl`](src/bin/cfsctl.rs): a command-line tool for performing operations
+   on the repository via the above APIs.
+
+ - (future?) some kind of a system service exposing those APIs to non-root
+   users in a safe way.
+
+The `cfsctl mount` command depends on (currently pre-release) Linux 6.12 for
+support for directly mounting erofs images without creating loopback devices.
 
 The purpose of this is to iterate fast on some new ideas (without worrying
 about breaking existing composefs users) and also as a learning experience (as
