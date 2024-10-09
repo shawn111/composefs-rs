@@ -1,30 +1,6 @@
 /* Implementation of the Split Stream file format
  *
- * Split Stream is a trivial way of storing file formats (like tar) with the "data blocks" stored
- * in the composefs object tree.  It's something like tar-split, but is based on content-addressed
- * storage of the file data and is implemented using a trivial binary-ish format.
- *
- * It is expected that the splitstream will be compressed before being stored on disk.
- *
- * The file format consists of a number of data blocks.
- *
- *
- * Each block starts with a u64 le "size" field followed by some amount of data.
- *
- *      64bit    variable
- *    +--------+---------------....
- *    | size   | data...
- *    +--------+---------------....
- *
- * There are two kinds of blocks.
- *
- *   - size != 0: in this case the length of the data is equal to the size.  This is "inline data".
- *     There is no padding, which implies that the size fields after the first may be unaligned.
- *
- *   - size == 0: in this case the length of the data is 32 bytes.  This is the binary form of a
- *     sha256 hash value and is a reference to an object in the composefs repository.
- *
- * That's it, really.  There's no header.  The file is over when there's no more blocks.
+ * See doc/splitstream.md
  */
 
 use std::{
