@@ -9,7 +9,7 @@ use crate::{
     repository::Repository
 };
 
-pub fn import_layer<R: Read>(repo: &Repository, name: &str, tar_stream: &mut R) -> Result<()> {
+pub fn import_layer<R: Read>(repo: &Repository, name: &str, tar_stream: &mut R) -> Result<Sha256HashValue> {
     let mut split_stream = zstd::stream::write::Encoder::new(vec![], 0)?;
 
     tar::split(

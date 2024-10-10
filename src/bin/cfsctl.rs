@@ -90,24 +90,27 @@ fn main() -> Result<()> {
             }
         },
         Command::Cat { name } => {
-            repo.merge_splitstream(&name, &mut std::io::stdout())
+            repo.merge_splitstream(&name, &mut std::io::stdout())?;
         },
         Command::ImportImage { reference, } => {
-            repo.import_image(&reference, &mut std::io::stdin())
+            let image_id = repo.import_image(&reference, &mut std::io::stdin())?;
+            println!("{}", hex::encode(image_id));
         },
         Command::Oci{ cmd: oci_cmd } => match oci_cmd {
             OciCommand::ImportLayer { name } => {
-                oci::import_layer(&repo, &name, &mut std::io::stdin())
+                let stream_id = oci::import_layer(&repo, &name, &mut std::io::stdin())?;
+                println!("{}", hex::encode(stream_id));
             },
             OciCommand::LsLayer { name } => {
-                oci::ls_layer(&repo, &name)
+                oci::ls_layer(&repo, &name)?;
             },
         }
         Command::Mount { name, mountpoint } => {
-            repo.mount(&name, &mountpoint)
+            repo.mount(&name, &mountpoint)?;
         },
         Command::GC => {
-            repo.gc()
+            repo.gc()?;
         }
     }
+    Ok(())
 }
