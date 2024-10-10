@@ -3,6 +3,7 @@ use std::{
     ffi::CStr,
     fs::File,
     io::{
+        BufReader,
         ErrorKind,
         Read,
         Write,
@@ -55,7 +56,6 @@ use crate::{
         splitstream_merge,
         splitstream_objects,
     },
-    tar,
     util::proc_self_fd,
 };
 
@@ -172,14 +172,17 @@ impl Repository {
             self.open_with_verity(&filename, hash)
         }
     }
+    pub fn open_stream(&self, name: &str) -> Result<zstd::stream::read::Decoder<BufReader<File>>> {
+        let file = File::from(self.open_in_category("streams", name)?);
+        Ok(zstd::stream::read::Decoder::new(file)?)
+    }
 
     fn open_object(&self, id: Sha256HashValue) -> Result<OwnedFd> {
         self.open_with_verity(&format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..])), id)
     }
 
     pub fn merge_splitstream<W: Write>(&self, name: &str, stream: &mut W) -> Result<()> {
-        let file = File::from(self.open_in_category("streams", name)?);
-        let mut split_stream = zstd::stream::read::Decoder::new(file)?;
+        let mut split_stream = self.open_stream(name)?;
         splitstream_merge(
             &mut split_stream,
             stream,
@@ -193,21 +196,6 @@ impl Repository {
         Ok(())
     }
 
-    pub fn import_tar<R: Read>(&self, name: &str, tar_stream: &mut R) -> Result<()> {
-        let mut split_stream = zstd::stream::write::Encoder::new(vec![], 0)?;
-
-        tar::split(
-            tar_stream,
-            &mut split_stream,
-            |data: &[u8]| -> Result<Sha256HashValue> {
-                self.ensure_object(data)
-            }
-        )?;
-
-        let object_id = self.ensure_object(&split_stream.finish()?)?;
-        self.link_ref(name, "streams", object_id)
-    }
-
     /// this function is not safe for untrusted users
     pub fn import_image<R: Read>(&self, name: &str, image: &mut R) -> Result<()> {
         let mut data = vec![];
@@ -216,19 +204,13 @@ impl Repository {
         self.link_ref(name, "images", object_id)
     }
 
-    pub fn ls(self, name: &str) -> Result<()> {
-        let file = File::from(self.open_in_category("streams", name)?);
-        let mut split_stream = zstd::stream::read::Decoder::new(file)?;
-        crate::tar::ls(&mut split_stream)
-    }
-
     pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
         let image = self.open_in_category("images", name)?;
         let object_path = format!("{}/objects", self.path);
         mount_fd(image, &object_path, mountpoint)
     }
 
-    fn link_ref(
+    pub fn link_ref(
         &self, name: &str, category: &str, object_id: Sha256HashValue
     ) -> Result<()> {
         let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
@@ -371,8 +353,7 @@ impl Repository {
             println!("{} lives as a stream", hex::encode(object));
             objects.insert(object);
 
-            let file = File::from(self.open_object(object)?);
-            let mut split_stream = zstd::stream::read::Decoder::new(file)?;
+            let mut split_stream = self.open_stream(&hex::encode(object))?;
             splitstream_objects(
                 &mut split_stream,
                 |obj: Sha256HashValue| {

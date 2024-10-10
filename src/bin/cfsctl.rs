@@ -1,9 +1,10 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use composefs_experiments::repository::Repository;
+use composefs_experiments::{
+    oci,
+    repository::Repository,
+};
 
 
 /// cfsctl
@@ -22,6 +23,19 @@ pub struct App {
 }
 
 #[derive(Debug, Subcommand)]
+enum OciCommand {
+    /// Stores a tar file as a splitstream in the repository.
+    ImportLayer {
+        name: String,
+    },
+    /// Lists the contents of a tar stream
+    LsLayer {
+        /// the name of the stream
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Take a transaction lock on the repository.
     /// This prevents garbage collection from occurring.
@@ -37,15 +51,10 @@ enum Command {
     ImportImage {
         reference: String,
     },
-    /// Stores a tar file as a splitstream in the repository.
-    ImportTar {
-        reference: String,
-        tarfile: Option<PathBuf>,
-    },
-    /// Lists the contents of a tar stream
-    Ls {
-        /// the name of the stream
-        name: String,
+    /// Commands for dealing with OCI layers
+    Oci {
+        #[clap(subcommand)]
+        cmd: OciCommand
     },
     /// Mounts a composefs, possibly enforcing fsverity of the image
     Mount {
@@ -86,12 +95,14 @@ fn main() -> Result<()> {
         Command::ImportImage { reference, } => {
             repo.import_image(&reference, &mut std::io::stdin())
         },
-        Command::ImportTar { reference, tarfile: _ } => {
-            repo.import_tar(&reference, &mut std::io::stdin())
-        },
-        Command::Ls { name } => {
-            repo.ls(&name)
-        },
+        Command::Oci{ cmd: oci_cmd } => match oci_cmd {
+            OciCommand::ImportLayer { name } => {
+                oci::import_layer(&repo, &name, &mut std::io::stdin())
+            },
+            OciCommand::LsLayer { name } => {
+                oci::ls_layer(&repo, &name)
+            },
+        }
         Command::Mount { name, mountpoint } => {
             repo.mount(&name, &mountpoint)
         },
