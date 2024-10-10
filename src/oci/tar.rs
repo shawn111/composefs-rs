@@ -1,11 +1,13 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
     ffi::{
         OsStr,
         OsString,
     },
-    os::unix::prelude::OsStrExt,
+    os::unix::prelude::{
+        OsStrExt,
+        OsStringExt,
+    },
     path::{
         Path,
         PathBuf,
@@ -94,33 +96,44 @@ pub fn split<R: Read, W: Write, F: FnMut(&[u8]) -> Result<Sha256HashValue>>(
     writer.done()
 }
 
-fn path_from_tar(long: &[u8], short: &[u8]) -> PathBuf {
+fn path_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {
     // Prepend leading /
     let mut path = vec![b'/'];
-    path.extend(if !long.is_empty() { long } else { short });
+    if let Some(name) = pax {
+        path.extend(name);
+    } else if !gnu.is_empty() {
+        path.extend(gnu);
+    } else {
+        path.extend(short);
+    }
 
     // Drop trailing '/' characters in case of directories.
     // https://github.com/rust-lang/rust/issues/122741
     // path.pop_if(|x| x == &b'/');
     if path.last() == Some(&b'/') {
-        path.pop();
+        path.pop(); // this is Vec<u8>, so that's a single char.
     }
 
-    PathBuf::from(OsStr::from_bytes(&path))
+    PathBuf::from(OsString::from_vec(path))
 }
 
-fn symlink_target_from_tar(long: &[u8], short: &[u8]) -> PathBuf {
-    // If I was smarter, I could do this without a copy....
-    let mut path = vec![];
-    path.extend(if !long.is_empty() { long } else { short });
-    PathBuf::from(OsStr::from_bytes(&path))
+fn symlink_target_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {
+    if let Some(name) = pax {
+        PathBuf::from(OsString::from_vec(name))
+    } else if !gnu.is_empty() {
+        PathBuf::from(OsString::from_vec(gnu))
+    } else {
+        PathBuf::from(OsStr::from_bytes(short))
+    }
 }
 
 pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
     let mut reader = SplitStreamReader::new(split_stream);
-    let mut gnu_longname: Vec<u8> = vec![];
     let mut gnu_longlink: Vec<u8> = vec![];
-    let mut pax_headers = HashMap::new();
+    let mut gnu_longname: Vec<u8> = vec![];
+    let mut pax_longlink: Option<Vec<u8>> = None;
+    let mut pax_longname: Option<Vec<u8>> = None;
+    let mut xattrs = vec![];
 
     // no root entry in the tar
     println!("{}", Entry {
@@ -149,7 +162,7 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
         let nlink = 1;
         let size = header.entry_size()?;
 
-        let item = match reader.read_exact(size as usize, (size + 511 & !511) as usize)? {
+        let item = match reader.read_exact(size as usize, ((size + 511) & !511) as usize)? {
             SplitStreamData::External(id) => match header.entry_type() {
                 EntryType::Regular | EntryType::Continuous => Item::Regular {
                     fsverity_digest: Some(hex::encode(id)),
@@ -172,8 +185,19 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
                 },
                 EntryType::XHeader => {
                     for item in PaxExtensions::new(&content) {
-                        if let Ok(extension) = item {
-                            pax_headers.insert(String::from(extension.key()?), Vec::from(extension.value_bytes()));
+                        let extension = item?;
+                        let key = extension.key()?;
+                        let value = Vec::from(extension.value_bytes());
+
+                        if key == "path" {
+                            pax_longname = Some(value);
+                        } else if key == "linkpath" {
+                            pax_longlink = Some(value);
+                        } else if let Some(xattr) = key.strip_prefix("SCHILY.xattr.") {
+                            xattrs.push(Xattr {
+                                key: Cow::Owned(OsString::from(xattr)),
+                                value: Cow::Owned(value)
+                            });
                         }
                     }
                     continue;
@@ -187,13 +211,13 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
                 EntryType::Link => Item::Hardlink {
                     target: {
                         let Some(link_name) = header.link_name_bytes() else { bail!("link without a name?") };
-                        Cow::Owned(path_from_tar(&gnu_longlink, &link_name))
+                        Cow::Owned(path_from_tar(pax_longlink, gnu_longlink, &link_name))
                     }
                 },
                 EntryType::Symlink => Item::Symlink {
                     target: {
                         let Some(link_name) = header.link_name_bytes() else { bail!("symlink without a name?") };
-                        Cow::Owned(symlink_target_from_tar(&gnu_longlink, &link_name))
+                        Cow::Owned(symlink_target_from_tar(pax_longlink, gnu_longlink, &link_name))
                     },
                     nlink
                 },
@@ -211,32 +235,28 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
             }
         };
 
-        let mut xattrs = vec![];
-        for (key, value) in &pax_headers {
-            if key == "path" {
-                // TODO: why?!
-            } else if key == "linkpath" {
-                // TODO: why?!
-            } else if let Some(xattr) = key.strip_prefix("SCHILY.xattr.") {
-                xattrs.push(Xattr { key: Cow::Owned(OsString::from(xattr)), value: Cow::Borrowed(&value) });
+        let ifmt = match item {
+            Item::Directory { .. } => FileType::Directory,
+            Item::Regular { .. } => FileType::RegularFile,
+            Item::Device { .. } => if header.entry_type() == EntryType::Block {
+                FileType::BlockDevice
             } else {
-                todo!("pax header {key:?}");
-            }
-        }
+                FileType::CharacterDevice
+            },
+            Item::Fifo { .. } => FileType::Fifo,
+            Item::Symlink { .. } => FileType::Symlink,
+            Item::Hardlink { .. } => {
+                // NB: For hardlinks we don't know the real type, but it's also not important:
+                // mkcomposefs will ignore it.  We need to fill something in, though.
+                FileType::RegularFile
+            },
+        }.as_raw_mode();
 
         let entry = Entry {
-            path: Cow::Owned(path_from_tar(&gnu_longname, &header.path_bytes())),
+            path: Cow::Owned(path_from_tar(pax_longname, gnu_longname, &header.path_bytes())),
             uid: header.uid()? as u32,
             gid: header.gid()? as u32,
-            mode: header.mode()? | match header.entry_type() {
-                EntryType::Directory => FileType::Directory,
-                EntryType::Regular => FileType::RegularFile,
-                EntryType::Symlink => FileType::Symlink,
-                EntryType::Char => FileType::CharacterDevice,
-                EntryType::Block => FileType::BlockDevice,
-                EntryType::Fifo => FileType::Fifo,
-                _ => { continue; }
-            }.as_raw_mode(),
+            mode: header.mode()? | ifmt,
             mtime: Mtime { sec: header.mtime()?, nsec: 0 },
             item,
             xattrs
@@ -244,8 +264,10 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
 
         println!("{}", entry);
 
-        gnu_longlink.clear();
-        gnu_longname.clear();
-        pax_headers.clear();
+        gnu_longlink = vec![];
+        gnu_longname = vec![];
+        pax_longlink = None;
+        pax_longname = None;
+        xattrs = vec![];
     }
 }
