@@ -127,8 +127,7 @@ fn symlink_target_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> 
     }
 }
 
-pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
-    let mut reader = SplitStreamReader::new(split_stream);
+fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Entry<'static>>> {
     let mut gnu_longlink: Vec<u8> = vec![];
     let mut gnu_longname: Vec<u8> = vec![];
     let mut pax_longlink: Option<Vec<u8>> = None;
@@ -148,12 +147,8 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
 
     loop {
         let mut buf = [0u8; 512];
-        if !reader.read_inline_exact(&mut buf)? {
-            return Ok(());
-        }
-
-        if buf == [0u8; 512] {
-            return Ok(());
+        if !reader.read_inline_exact(&mut buf)? || buf == [0u8; 512] {
+            return Ok(None);
         }
 
         let header = tar::Header::from_byte_slice(&buf);
@@ -252,7 +247,7 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
             },
         }.as_raw_mode();
 
-        let entry = Entry {
+        return Ok(Some(Entry {
             path: Cow::Owned(path_from_tar(pax_longname, gnu_longname, &header.path_bytes())),
             uid: header.uid()? as u32,
             gid: header.gid()? as u32,
@@ -260,14 +255,14 @@ pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
             mtime: Mtime { sec: header.mtime()?, nsec: 0 },
             item,
             xattrs
-        };
-
-        println!("{}", entry);
-
-        gnu_longlink = vec![];
-        gnu_longname = vec![];
-        pax_longlink = None;
-        pax_longname = None;
-        xattrs = vec![];
+        }));
     }
+}
+
+pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
+    let mut reader = SplitStreamReader::new(split_stream);
+    while let Some(entry) = get_entry(&mut reader)? {
+        println!("{}", entry);
+    }
+    Ok(())
 }
