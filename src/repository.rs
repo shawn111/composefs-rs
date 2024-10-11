@@ -205,7 +205,7 @@ impl Repository {
         let object_id = writer.done()?;
 
         let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
-        let stream_path = format!("streams/{}", hex::encode(&object_id));
+        let stream_path = format!("streams/{}", hex::encode(object_id));
         let reference_path = format!("streams/refs/{name}");
 
         self.ensure_symlink(&stream_path, &object_path)?;
