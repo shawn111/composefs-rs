@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use clap::Parser;
 
 use composefs_experiments::mount::MountOptions;
@@ -13,7 +14,7 @@ struct Args {
     mountpoint: String,
 
     #[arg(short, long)]
-    basedir: String,
+    basedir: PathBuf,
 
     #[arg(short, long)]
     digest: Option<String>,

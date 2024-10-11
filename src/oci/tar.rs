@@ -117,23 +117,12 @@ fn symlink_target_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> 
     }
 }
 
-fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Entry<'static>>> {
+pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Entry<'static>>> {
     let mut gnu_longlink: Vec<u8> = vec![];
     let mut gnu_longname: Vec<u8> = vec![];
     let mut pax_longlink: Option<Vec<u8>> = None;
     let mut pax_longname: Option<Vec<u8>> = None;
     let mut xattrs = vec![];
-
-    // no root entry in the tar
-    println!("{}", Entry {
-        path: Cow::Borrowed(Path::new("/")),
-        uid: 0,
-        gid: 0,
-        mode: FileType::Directory.as_raw_mode() | 0o755,
-        mtime: Mtime { sec: 0, nsec: 0 },
-        item: Item::Directory { size: 0, nlink: 1 },
-        xattrs: vec![]
-    });
 
     loop {
         let mut buf = [0u8; 512];
@@ -250,6 +239,17 @@ fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Entry<
 }
 
 pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
+    // no root entry in the tar
+    println!("{}", Entry {
+        path: Cow::Borrowed(Path::new("/")),
+        uid: 0,
+        gid: 0,
+        mode: FileType::Directory.as_raw_mode() | 0o755,
+        mtime: Mtime { sec: 0, nsec: 0 },
+        item: Item::Directory { size: 0, nlink: 1 },
+        xattrs: vec![]
+    });
+
     let mut reader = SplitStreamReader::new(split_stream);
     while let Some(entry) = get_entry(&mut reader)? {
         println!("{}", entry);

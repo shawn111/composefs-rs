@@ -62,7 +62,7 @@ use crate::{
 
 pub struct Repository {
     repository: OwnedFd,
-    path: String,
+    path: PathBuf,
 }
 
 impl Drop for Repository {
@@ -73,13 +73,13 @@ impl Drop for Repository {
 }
 
 impl Repository {
-    pub fn open_path(path: String) -> Result<Repository> {
+    pub fn open_path(path: PathBuf) -> Result<Repository> {
         // O_PATH isn't enough because flock()
         let repository = open(&path, OFlags::RDONLY, Mode::empty())
-            .with_context(|| format!("Cannot open composefs repository '{path}'"))?;
+            .with_context(|| format!("Cannot open composefs repository {path:?}"))?;
 
         flock(&repository, FlockOperation::LockShared).
-            with_context(|| format!("Cannot lock repository '{path}'"))?;
+            with_context(|| format!("Cannot lock repository {path:?}"))?;
 
         Ok(Repository { repository, path })
     }
@@ -88,11 +88,11 @@ impl Repository {
         let home = std::env::var("HOME")
             .with_context(|| "$HOME must be set when in user mode")?;
 
-        Repository::open_path(format!("{}/.var/lib/composefs", home))
+        Repository::open_path(PathBuf::from(home).join(".var/lib/composefs"))
     }
 
     pub fn open_system() -> Result<Repository> {
-        Repository::open_path("/sysroot/composefs".to_string())
+        Repository::open_path(PathBuf::from("/sysroot/composefs".to_string()))
     }
 
     fn ensure_parent<P: AsRef<Path>>(&self, path: P) -> Result<()> {
@@ -177,10 +177,10 @@ impl Repository {
                 let mut hash = Sha256HashValue::EMPTY;
                 let linkbytes = linkpath.to_bytes();
                 if linkbytes.len() != 67 || &linkbytes[0..3] != b"../" {
-                    bail!("Incorrectly formatted symlink {}/{}", self.path, filename);
+                    bail!("Incorrectly formatted symlink {:?}/{:?}", self.path, filename);
                 }
                 hex::decode_to_slice(&linkpath.to_bytes()[3..], &mut hash).
-                    with_context(|| format!("Incorrectly formatted symlink {}/{}", self.path, filename))?;
+                    with_context(|| format!("Incorrectly formatted symlink {:?}/{:?}", self.path, filename))?;
                 Ok(Some(hash))
             }
         }
@@ -294,7 +294,7 @@ impl Repository {
 
     pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
         let image = self.open_in_category("images", name)?;
-        let object_path = format!("{}/objects", self.path);
+        let object_path = self.path.join("objects");
         mount_fd(image, &object_path, mountpoint)
     }
 

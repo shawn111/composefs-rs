@@ -1,8 +1,11 @@
-use std::os::fd::{
-    OwnedFd,
-    BorrowedFd,
-    AsFd,
-    AsRawFd
+use std::{
+    path::Path,
+    os::fd::{
+        OwnedFd,
+        BorrowedFd,
+        AsFd,
+        AsRawFd,
+    },
 };
 
 use anyhow::Result;
@@ -78,7 +81,7 @@ fn proc_self_fd<A: AsFd>(fd: A) -> String {
     format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd())
 }
 
-pub fn mount_fd<F: AsFd>(image: F, basedir: &str, mountpoint: &str) -> Result<()> {
+pub fn mount_fd<F: AsFd>(image: F, basedir: &Path, mountpoint: &str) -> Result<()> {
         let erofs = FsHandle::open("erofs")?;
         fsconfig_set_string(erofs.as_fd(), "source", proc_self_fd(&image))?;
         fsconfig_create(erofs.as_fd())?;
@@ -101,13 +104,13 @@ pub fn mount_fd<F: AsFd>(image: F, basedir: &str, mountpoint: &str) -> Result<()
 
 pub struct MountOptions<'a> {
     image: &'a str,
-    basedir: &'a str,
+    basedir: &'a Path,
     digest: Option<&'a str>,
     verity: bool,
 }
 
 impl<'a> MountOptions<'a> {
-    pub fn new(image: &'a str, basedir: &'a str) -> MountOptions<'a> {
+    pub fn new(image: &'a str, basedir: &'a Path) -> MountOptions<'a> {
         MountOptions { image, basedir, digest: None, verity: false }
     }
 

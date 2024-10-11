@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -16,7 +17,7 @@ use composefs_experiments::{
 #[clap(name = "cfsctl", version)]
 pub struct App {
     #[clap(long, group="repopath")]
-    repo: Option<String>,
+    repo: Option<PathBuf>,
     #[clap(long, group="repopath")]
     user: bool,
     #[clap(long, group="repopath")]
