@@ -6,22 +6,24 @@ use anyhow::Result;
 
 use crate::{
     fsverity::Sha256HashValue,
-    repository::Repository
+    repository::Repository,
 };
 
 pub fn import_layer<R: Read>(repo: &Repository, name: &str, tar_stream: &mut R) -> Result<Sha256HashValue> {
-    let mut split_stream = zstd::stream::write::Encoder::new(vec![], 0)?;
+    let mut writer = repo.create_stream(None);
+    tar::split(tar_stream, &mut writer)?;
+    repo.store_stream(writer, name)
+}
 
-    tar::split(
-        tar_stream,
-        &mut split_stream,
-        |data: &[u8]| -> Result<Sha256HashValue> {
-            repo.ensure_object(data)
-        }
-    )?;
-
-    let object_id = repo.ensure_object(&split_stream.finish()?)?;
-    repo.link_ref(name, "streams", object_id)
+pub fn import_layer_by_sha256<R: Read>(
+    repo: &Repository,
+    name: &str,
+    tar_stream: &mut R,
+    sha256: Sha256HashValue
+) -> Result<()> {
+    repo.store_stream_by_sha256(name, sha256, |writer| {
+        tar::split(tar_stream, writer)
+    })
 }
 
 pub fn ls_layer(repo: &Repository, name: &str) -> Result<()> {

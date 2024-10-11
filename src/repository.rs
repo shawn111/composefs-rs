@@ -55,6 +55,7 @@ use crate::{
     splitstream::{
         splitstream_merge,
         splitstream_objects,
+        SplitStreamWriter,
     },
     util::proc_self_fd,
 };
@@ -112,6 +113,14 @@ impl Repository {
         }
     }
 
+    pub fn exists(&self, name: &str) -> Result<bool> {
+        match accessat(&self.repository, name, Access::READ_OK, AtFlags::empty()) {
+            Ok(()) => Ok(true),
+            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e)?
+        }
+    }
+
     pub fn ensure_object(&self, data: &[u8]) -> Result<Sha256HashValue> {
         let digest = FsVerityHasher::hash(data);
         let dir = PathBuf::from(format!("objects/{:02x}", digest[0]));
@@ -148,13 +157,91 @@ impl Repository {
     }
 
     pub fn open_with_verity(&self, filename: &str, expected_verity: Sha256HashValue) -> Result<OwnedFd> {
-        let fd = openat(&self.repository, filename, OFlags::RDONLY, Mode::empty())?;
+        let fd = self.openat(filename, OFlags::RDONLY)?;
         let measured_verity: Sha256HashValue = fs_ioc_measure_verity(&fd)?;
         if measured_verity != expected_verity {
             bail!("bad verity!")
         } else {
             Ok(fd)
         }
+    }
+
+    /// Performs a lookup of a by-sha256 reference in the given category
+    /// If such a reference exists, this returns the underlying object ID.
+    pub fn find_by_sha256(&self, category: &str, sha256: Sha256HashValue) -> Result<Option<Sha256HashValue>> {
+        let filename = format!("{}/by-sha256/{}", category, hex::encode(sha256));
+        match readlinkat(&self.repository, &filename, []) {
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e)?,
+            Ok(linkpath) => {
+                let mut hash = Sha256HashValue::EMPTY;
+                let linkbytes = linkpath.to_bytes();
+                if linkbytes.len() != 67 || &linkbytes[0..3] != b"../" {
+                    bail!("Incorrectly formatted symlink {}/{}", self.path, filename);
+                }
+                hex::decode_to_slice(&linkpath.to_bytes()[3..], &mut hash).
+                    with_context(|| format!("Incorrectly formatted symlink {}/{}", self.path, filename))?;
+                Ok(Some(hash))
+            }
+        }
+    }
+
+    /// Creates a SplitStreamWriter for writing a split stream.
+    /// You should write the data to the returned object and then pass it to .store_stream() to
+    /// store the result.
+    pub fn create_stream(&self, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
+        SplitStreamWriter::new(self, sha256)
+    }
+
+    /// Consumes the SplitStreamWriter, stores the splitstream in the object store (if it's not
+    /// already present), and links the named reference to it.
+    ///
+    ///
+    ///
+    /// This is an error if the reference already exists.
+    ///
+    /// In any case, the object ID (by fs-verity digest) is returned.
+    pub fn store_stream(&self, writer: SplitStreamWriter, name: &str) -> Result<Sha256HashValue> {
+        let object_id = writer.done()?;
+
+        let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
+        let stream_path = format!("streams/{}", hex::encode(&object_id));
+        let reference_path = format!("streams/refs/{name}");
+
+        self.ensure_symlink(&stream_path, &object_path)?;
+        self.symlink(&reference_path, &stream_path)?;
+        Ok(object_id)
+    }
+
+    /// A convenience function to check if a stream with the given SHA256 digest already exists.
+    ///
+    /// If such a stream exists, then this function simply creates a new named reference to the
+    /// stream and returns the underlying object ID.
+    ///
+    /// If not, the user's callback is called with a SplitStreamWriter which should be populated
+    /// with the data for the stream.  After the callback returns, we write the stream to disk and
+    /// link the named reference to it, returning the underlying object ID.
+    ///
+    /// It is an error if the named reference already exists.
+    pub fn store_stream_by_sha256<F: FnOnce(&mut SplitStreamWriter) -> Result<()>>(
+        &self, name: &str, sha256: Sha256HashValue, callback: F,
+    ) -> Result<()> {
+        let by_sha256_path = format!("streams/by-sha256/{}", hex::encode(sha256));
+
+        if !self.exists(&by_sha256_path)? {
+            let mut writer = self.create_stream(Some(sha256));
+            callback(&mut writer)?;
+            let object_id = writer.done()?;
+
+            let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
+            let stream_path = format!("streams/{}", hex::encode(object_id));
+            self.ensure_symlink(&stream_path, &object_path)?;
+            self.ensure_symlink(&by_sha256_path, &stream_path)?;
+        }
+
+        let reference_path = format!("streams/refs/{name}");
+        self.symlink(&reference_path, &by_sha256_path)?;
+        Ok(())
     }
 
     /// category is like "streams" or "images"
@@ -164,7 +251,7 @@ impl Repository {
 
         if name.contains("/") {
             // no fsverity checking on this path
-            Ok(openat(&self.repository, filename, OFlags::RDONLY, Mode::empty())?)
+            self.openat(&filename, OFlags::RDONLY)
         } else {
             // this must surely be a hash value, and we want to verify it
             let mut hash = Sha256HashValue::EMPTY;
@@ -172,6 +259,7 @@ impl Repository {
             self.open_with_verity(&filename, hash)
         }
     }
+
     pub fn open_stream(&self, name: &str) -> Result<zstd::stream::read::Decoder<BufReader<File>>> {
         let file = File::from(self.open_in_category("streams", name)?);
         Ok(zstd::stream::read::Decoder::new(file)?)
@@ -222,7 +310,7 @@ impl Repository {
         Ok(object_id)
     }
 
-    fn symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> Result<()> {
+    pub fn symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> Result<()> {
         let name = name.as_ref();
         let parent = name.parent()
             .expect("make_link() called for file directly in repo top-level");
@@ -235,6 +323,27 @@ impl Repository {
         target_path.push(target);
 
         Ok(symlinkat(target_path, &self.repository, name)?)
+    }
+
+    // TODO: more DRY with the above function plz
+    pub fn ensure_symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> Result<()> {
+        let name = name.as_ref();
+        let parent = name.parent()
+            .expect("make_link() called for file directly in repo top-level");
+        self.ensure_dir(parent)?;
+
+        let mut target_path = PathBuf::new();
+        for _ in parent.iter() {
+            target_path.push("..");
+        }
+        target_path.push(target);
+
+        match symlinkat(target_path, &self.repository, name) {
+            Ok(()) => Ok(()),
+            // NB: we assume that the link is the same
+            Err(ref e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e)?
+        }
     }
 
     fn read_symlink_hashvalue(dirfd: &OwnedFd, name: &CStr) -> Result<Sha256HashValue> {

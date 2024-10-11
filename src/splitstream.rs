@@ -15,8 +15,13 @@ use anyhow::{
     Result,
     bail,
 };
+use sha2::{
+    Digest,
+    Sha256
+};
 
 use crate::{
+    repository::Repository,
     fsverity::{
         FsVerityHashValue,
         Sha256HashValue,
@@ -25,17 +30,27 @@ use crate::{
 };
 
 // utility class to help write splitstreams
-pub struct SplitStreamWriter<'w, W: Write> {
+type SplitStreamZstdEncoder = zstd::stream::write::Encoder<'static, Vec<u8>>;
+
+pub struct SplitStreamWriter<'a> {
+    repo: &'a Repository,
     inline_content: Vec<u8>,
-    writer: &'w mut W
+    writer: SplitStreamZstdEncoder,
+    sha256: Option<(Sha256, Sha256HashValue)>,
 }
 
-impl<'w, W: Write> SplitStreamWriter<'w, W> {
-    pub fn new(writer: &'w mut W) -> SplitStreamWriter<'w, W> {
-        SplitStreamWriter { inline_content: vec![], writer }
+impl<'a> SplitStreamWriter<'a> {
+    pub fn new(repo: &Repository, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
+        SplitStreamWriter {
+            repo,
+            inline_content: vec![],
+            // SAFETY: we surely can't get an error writing the header to a Vec<u8>
+            writer: zstd::stream::write::Encoder::new(vec![], 0).unwrap(),
+            sha256: sha256.map(|x| (Sha256::new(), x))
+        }
     }
 
-    fn write_fragment(writer: &mut W, size: usize, data: &[u8]) -> Result<()> {
+    fn write_fragment(writer: &mut SplitStreamZstdEncoder, size: usize, data: &[u8]) -> Result<()> {
         writer.write_all(&(size as u64).to_le_bytes())?;
         Ok(writer.write_all(data)?)
     }
@@ -43,7 +58,7 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
     /// flush any buffered inline data, taking new_value as the new value of the buffer
     fn flush_inline(&mut self, new_value: Vec<u8>) -> Result<()> {
         if !self.inline_content.is_empty() {
-            SplitStreamWriter::write_fragment(self.writer, self.inline_content.len(), &self.inline_content)?;
+            SplitStreamWriter::write_fragment(&mut self.writer, self.inline_content.len(), &self.inline_content)?;
             self.inline_content = new_value;
         }
         Ok(())
@@ -52,22 +67,42 @@ impl<'w, W: Write> SplitStreamWriter<'w, W> {
     /// really, "add inline content to the buffer"
     /// you need to call .flush_inline() later
     pub fn write_inline(&mut self, data: &[u8]) {
+        if let Some((ref mut sha256, ..)) = self.sha256 {
+            sha256.update(data);
+        }
         self.inline_content.extend(data);
     }
 
     /// write a reference to external data to the stream.  If the external data had padding in the
     /// stream which is not stored in the object then pass it here as well and it will be stored
     /// inline after the reference.
-    pub fn write_reference(&mut self, reference: Sha256HashValue, padding: Vec<u8>) -> Result<()> {
+    fn write_reference(&mut self, reference: Sha256HashValue, padding: Vec<u8>) -> Result<()> {
         // Flush the inline data before we store the external reference.  Any padding from the
         // external data becomes the start of a new inline block.
         self.flush_inline(padding)?;
 
-        SplitStreamWriter::write_fragment(self.writer, 0, &reference)
+        SplitStreamWriter::write_fragment(&mut self.writer, 0, &reference)
     }
 
-    pub fn done(&mut self) -> Result<()> {
-        self.flush_inline(vec![])
+    pub fn write_external(&mut self, data: &[u8], padding: Vec<u8>) -> Result<()> {
+        if let Some((ref mut sha256, ..)) = self.sha256 {
+            sha256.update(data);
+            sha256.update(&padding);
+        }
+        let id = self.repo.ensure_object(data)?;
+        self.write_reference(id, padding)
+    }
+
+    pub fn done(mut self) -> Result<Sha256HashValue> {
+        self.flush_inline(vec![])?;
+
+        if let Some((context, expected)) = self.sha256 {
+            if Into::<Sha256HashValue>::into(context.finalize()) != expected {
+                bail!("Content doesn't have expected SHA256 hash value!");
+            }
+        }
+
+        self.repo.ensure_object(&self.writer.finish()?)
     }
 }
 

@@ -12,10 +12,7 @@ use std::{
         Path,
         PathBuf,
     },
-    io::{
-        Read,
-        Write,
-    },
+    io::Read,
 };
 
 use anyhow::{
@@ -39,7 +36,6 @@ use tar::{
 };
 
 use crate::{
-    fsverity::Sha256HashValue,
     splitstream::{
         SplitStreamData,
         SplitStreamReader,
@@ -60,13 +56,10 @@ fn read_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
 /// Splits the tar file from tar_stream into a Split Stream.  The store_data function is
 /// responsible for ensuring that "external data" is in the composefs repository and returns the
 /// fsverity hash value of that data.
-pub fn split<R: Read, W: Write, F: FnMut(&[u8]) -> Result<Sha256HashValue>>(
+pub fn split<R: Read>(
     tar_stream: &mut R,
-    split_stream: &mut W,
-    mut store_data: F,
+    writer: &mut SplitStreamWriter,
 ) -> Result<()> {
-    let mut writer = SplitStreamWriter::new(split_stream);
-
     while let Some(header) = read_header(tar_stream)? {
         // the header always gets stored as inline data
         writer.write_inline(header.as_bytes());
@@ -84,16 +77,13 @@ pub fn split<R: Read, W: Write, F: FnMut(&[u8]) -> Result<Sha256HashValue>>(
         if header.entry_type() == EntryType::Regular && storage_size > 0 {
             // non-empty regular file: store the data in the object store
             let padding = buffer.split_off(actual_size);
-            let reference = store_data(&buffer)?;
-            writer.write_reference(reference, padding)?;
+            writer.write_external(&buffer, padding)?;
         } else {
             // else: store the data inline in the split stream
             writer.write_inline(&buffer);
         }
     }
-
-    // flush out any remaining inline data
-    writer.done()
+    Ok(())
 }
 
 fn path_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {

@@ -2,6 +2,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use composefs_experiments::{
+    fsverity::{
+        FsVerityHashValue,
+        Sha256HashValue,
+    },
     oci,
     repository::Repository,
 };
@@ -27,6 +31,8 @@ enum OciCommand {
     /// Stores a tar file as a splitstream in the repository.
     ImportLayer {
         name: String,
+        #[clap(long)]
+        sha256: Option<String>,
     },
     /// Lists the contents of a tar stream
     LsLayer {
@@ -97,9 +103,15 @@ fn main() -> Result<()> {
             println!("{}", hex::encode(image_id));
         },
         Command::Oci{ cmd: oci_cmd } => match oci_cmd {
-            OciCommand::ImportLayer { name } => {
-                let stream_id = oci::import_layer(&repo, &name, &mut std::io::stdin())?;
-                println!("{}", hex::encode(stream_id));
+            OciCommand::ImportLayer { name, sha256 } => {
+                if let Some(digest) = sha256 {
+                    let mut value = Sha256HashValue::EMPTY;
+                    hex::decode_to_slice(digest, &mut value)?;
+                    oci::import_layer_by_sha256(&repo, &name, &mut std::io::stdin(), value)?;
+                } else {
+                    let stream_id = oci::import_layer(&repo, &name, &mut std::io::stdin())?;
+                    println!("{}", hex::encode(stream_id));
+                }
             },
             OciCommand::LsLayer { name } => {
                 oci::ls_layer(&repo, &name)?;
