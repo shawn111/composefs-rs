@@ -30,7 +30,3 @@ pub fn import_layer_by_sha256<R: Read>(
 pub fn ls_layer(repo: &Repository, name: &str) -> Result<()> {
     tar::ls(&mut repo.open_stream(name)?)
 }
-
-pub fn image(repo: &Repository, name: &str) -> Result<()> {
-    image::merge(&mut repo.open_stream(name)?)
-}

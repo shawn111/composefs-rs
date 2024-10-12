@@ -41,7 +41,7 @@ enum OciCommand {
         name: String,
     },
     CreateImage {
-        name: String,
+        layers: Vec<String>,
     },
 }
 
@@ -120,8 +120,8 @@ fn main() -> Result<()> {
             OciCommand::LsLayer { name } => {
                 oci::ls_layer(&repo, &name)?;
             },
-            OciCommand::CreateImage { name } => {
-                oci::image(&repo, &name)?;
+            OciCommand::CreateImage { layers } => {
+                oci::image::create_image(&repo, &layers)?;
             },
         }
         Command::Mount { name, mountpoint } => {
