@@ -8,13 +8,14 @@ use anyhow::{
     bail,
 };
 use crate::{
+    dumpfile::write_dumpfile,
     image::{
         FileSystem,
         Leaf,
     },
     oci,
     repository::Repository,
-    splitstream::SplitStreamReader
+    splitstream::SplitStreamReader,
 };
 
 fn is_whiteout(name: &OsStr) -> Option<&OsStr> {
@@ -60,7 +61,8 @@ pub fn create_image(repo: &Repository, layers: &Vec<String>) -> Result<()> {
         }
     }
 
-    filesystem.dump(&mut std::io::stdout())?;
+    let mut stdout = std::io::stdout();
+    write_dumpfile(&mut stdout, &filesystem)?;
 
     Ok(())
 }

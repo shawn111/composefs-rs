@@ -57,7 +57,7 @@ fn test_layer() -> Result<()> {
     let mut split_stream = repo.open_stream("refs/name")?;
     let mut reader = SplitStreamReader::new(&mut split_stream);
     while let Some(entry) = oci::tar::get_entry(&mut reader)? {
-        writeln!(dump, "{}", entry)?;
+        writeln!(dump, "{:?}", entry)?;
     }
     assert_eq!(dump, "\
 /file0 0 100700 1 0 0 0 0.0 -  -

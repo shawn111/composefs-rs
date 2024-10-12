@@ -1,10 +1,8 @@
 use std::{
-    collections::HashMap,
     ffi::{
         OsStr,
         OsString,
     },
-    io::Write,
     path::{
         Path,
         PathBuf,
@@ -47,8 +45,8 @@ pub struct Leaf {
 
 #[derive(Debug)]
 pub struct Directory {
-    stat: Stat,
-    entries: Vec<DirEnt>
+    pub stat: Stat,
+    pub entries: Vec<DirEnt>
 }
 
 #[derive(Debug)]
@@ -59,8 +57,8 @@ pub enum Inode {
 
 #[derive(Debug)]
 pub struct DirEnt {
-    name: OsString,
-    inode: Inode,
+    pub name: OsString,
+    pub inode: Inode,
 }
 
 impl Directory {
@@ -138,35 +136,16 @@ impl Directory {
             _ => { /* not an error to remove an already-missing file */ }
         }
     }
-
-    pub fn write<W: Write>(&self, writer: &mut W, dirname: &Path, hardlinks: &mut HashMap<*const Leaf, PathBuf>) -> Result<()> {
-        writeln!(writer, "{:?} -> dir", dirname)?;
-        for DirEnt { name, inode } in self.entries.iter() {
-            let path = dirname.join(name);
-
-            match inode {
-                Inode::Directory(dir) => dir.write(writer, &path, hardlinks)?,
-                Inode::Leaf(leaf) => {
-                    if Rc::strong_count(leaf) > 1 {
-                        let ptr = Rc::as_ptr(leaf);
-                        if let Some(target) = hardlinks.get(&ptr) {
-                            writeln!(writer, "{:?} -> hard {:?}", name, target)?;
-                        } else {
-                            writeln!(writer, "{:?} -> hard.", name)?;
-                            hardlinks.insert(ptr, path);
-                        }
-                    } else {
-                        writeln!(writer, "{:?} -> file", path)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 pub struct FileSystem {
-    root: Directory
+    pub root: Directory
+}
+
+impl Default for FileSystem {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileSystem {
@@ -239,11 +218,5 @@ impl FileSystem {
         } else {
             todo!();
         }
-    }
-
-    pub fn dump<W: Write>(&self, writer: &mut W) -> Result<()> {
-        let mut hardlinks = HashMap::new();
-        self.root.write(writer, Path::new("/"), &mut hardlinks)?;
-        Ok(())
     }
 }
