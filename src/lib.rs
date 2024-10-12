@@ -1,4 +1,5 @@
 mod util;
+pub mod image;
 pub mod repository;
 pub mod fsverity;
 pub mod mount;

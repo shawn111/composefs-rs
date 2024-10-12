@@ -1,96 +1,21 @@
 use std::{
-    ffi::{
-        OsStr,
-        OsString,
-    },
-    io::Write,
+    ffi::OsStr,
     os::unix::ffi::OsStrExt,
-    path::Path,
 };
 
 use anyhow::{
-    Context,
     Result,
     bail,
 };
-use composefs::dumpfile::Item;
-
 use crate::{
+    image::{
+        FileSystem,
+        Leaf,
+    },
     oci,
     repository::Repository,
-    splitstream::SplitStreamReader,
+    splitstream::SplitStreamReader
 };
-
-pub struct DirEnt {
-    name: OsString,
-    inode: Inode,
-}
-
-pub struct Directory {
-    entries: Vec<DirEnt>
-}
-
-impl Directory {
-    pub fn find_entry(&self, name: &OsStr) -> Result<usize, usize> {
-        // performance TODO: on the first pass through we'll almost always want the last entry
-        // (since the layer is sorted and we're always inserting into the directory that we just
-        // created) maybe add a special case for that?
-        self.entries.binary_search_by_key(&name, |e| &e.name)
-    }
-
-    pub fn recurse<'a>(&'a mut self, name: &OsStr) -> Result<&'a mut Directory> {
-        match self.find_entry(name) {
-            Ok(idx) => match self.entries[idx].inode {
-                Inode::Directory(ref mut subdir) => Ok(subdir),
-                _ => bail!("Parent directory is not a directory"),
-            },
-            _ => bail!("Unable to find parent directory {:?}", name),
-        }
-    }
-
-    pub fn insert(&mut self, name: &OsStr, inode: Inode) {
-        match self.find_entry(name) {
-            Ok(idx) => {
-                // found existing item.
-                if let Inode::Directory { .. } = inode {
-                    // don't replace directories!
-                } else {
-                    self.entries[idx].inode = inode;
-                }
-            }
-            Err(idx) => {
-                self.entries.insert(idx, DirEnt { name: OsString::from(name), inode });
-            }
-        }
-    }
-
-    pub fn delete(&mut self, name: &OsStr) {
-        match self.find_entry(name) {
-            Ok(idx) => { self.entries.remove(idx); }
-            _ => { /* not an error to remove an already-missing file*/ }
-        }
-    }
-
-    pub fn write<W: Write>(&self, writer: &mut W, dirname: &Path) -> Result<()> {
-        writeln!(writer, "{:?} -> dir", dirname)?;
-        for DirEnt { name, inode } in self.entries.iter() {
-            let path = dirname.join(name);
-
-            match inode {
-                Inode::Directory(dir) => dir.write(writer, &path)?,
-                Inode::File { .. } => writeln!(writer, "{:?} -> file", path)?,
-            }
-        }
-        Ok(())
-    }
-}
-
-pub enum Inode {
-    Directory(Directory),
-    File {
-        content: Vec<u8>,
-    }
-}
 
 fn is_whiteout(name: &OsStr) -> Option<&OsStr> {
     let bytes = name.as_bytes();
@@ -101,22 +26,22 @@ fn is_whiteout(name: &OsStr) -> Option<&OsStr> {
     }
 }
 
-pub fn process_entry(mut dir: &mut Directory, name: &Path, inode: Inode) -> Result<()> {
-    if let Some(subdirs) = name.parent() {
-        for segment in subdirs {
-            if segment.is_empty() || segment == "/" { // Path.parent() is really weird...
-                continue;
-            }
-            dir = dir.recurse(segment)
-                .with_context(|| format!("Trying to insert item {:?}", name))?;
-        }
-    }
-
-    if let Some(filename) = name.file_name() {
+pub fn process_entry(filesystem: &mut FileSystem, entry: oci::tar::TarEntry) -> Result<()> {
+    if let Some(filename) = entry.path.file_name() {
         if let Some(whiteout) = is_whiteout(filename) {
-            dir.delete(whiteout);
+            filesystem.remove(&entry.path.parent().unwrap().join(whiteout))?;
         } else {
-            dir.insert(filename, inode);
+            match entry.item {
+                oci::tar::TarItem::Directory => {
+                    filesystem.mkdir(&entry.path, entry.stat)?;
+                },
+                oci::tar::TarItem::Leaf(content) => {
+                    filesystem.insert(&entry.path, Leaf { stat: entry.stat, content })?;
+                },
+                oci::tar::TarItem::Hardlink(target) => {
+                    filesystem.hardlink(&entry.path, &target)?;
+                },
+            }
         }
     } else {
         bail!("Invalid filename");
@@ -125,26 +50,17 @@ pub fn process_entry(mut dir: &mut Directory, name: &Path, inode: Inode) -> Resu
 }
 
 pub fn create_image(repo: &Repository, layers: &Vec<String>) -> Result<()> {
-    let mut root = Directory { entries: vec![] };
+    let mut filesystem = FileSystem::new();
 
     for layer in layers {
         let mut split_stream = repo.open_stream(layer)?;
         let mut reader = SplitStreamReader::new(&mut split_stream);
         while let Some(entry) = oci::tar::get_entry(&mut reader)? {
-            let inode = match entry.item {
-                Item::Directory { .. } => {
-                    Inode::Directory(Directory { entries: vec![] })
-                },
-                _ => {
-                    Inode::File { content: vec![] }
-                }
-            };
-
-            process_entry(&mut root, &entry.path, inode)?;
+           process_entry(&mut filesystem, entry)?;
         }
     }
 
-    root.write(&mut std::io::stdout(), Path::new("/"))?;
+    filesystem.dump(&mut std::io::stdout())?;
 
     Ok(())
 }

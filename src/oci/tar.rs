@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     ffi::{
         OsStr,
         OsString,
@@ -8,10 +7,7 @@ use std::{
         OsStrExt,
         OsStringExt,
     },
-    path::{
-        Path,
-        PathBuf,
-    },
+    path::PathBuf,
     io::Read,
 };
 
@@ -19,16 +15,7 @@ use anyhow::{
     bail,
     Result
 };
-use composefs::dumpfile::{
-    Entry,
-    Item,
-    Mtime,
-    Xattr,
-};
-use rustix::fs::{
-    FileType,
-    makedev
-};
+use rustix::fs::makedev;
 use tar::{
     EntryType,
     Header,
@@ -36,6 +23,10 @@ use tar::{
 };
 
 use crate::{
+    image::{
+        LeafContent,
+        Stat,
+    },
     splitstream::{
         SplitStreamData,
         SplitStreamReader,
@@ -86,6 +77,20 @@ pub fn split<R: Read>(
     Ok(())
 }
 
+#[derive(Debug)]
+pub enum TarItem {
+    Directory,
+    Leaf(LeafContent),
+    Hardlink(PathBuf),
+}
+
+#[derive(Debug)]
+pub struct TarEntry {
+    pub path: PathBuf,
+    pub stat: Stat,
+    pub item: TarItem,
+}
+
 fn path_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {
     // Prepend leading /
     let mut path = vec![b'/'];
@@ -117,7 +122,7 @@ fn symlink_target_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> 
     }
 }
 
-pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Entry<'static>>> {
+pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<TarEntry>> {
     let mut gnu_longlink: Vec<u8> = vec![];
     let mut gnu_longname: Vec<u8> = vec![];
     let mut pax_longlink: Option<Vec<u8>> = None;
@@ -133,16 +138,11 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<En
         let header = tar::Header::from_byte_slice(&buf);
         assert!(header.as_ustar().is_some());
 
-        let nlink = 1;
         let size = header.entry_size()?;
 
         let item = match reader.read_exact(size as usize, ((size + 511) & !511) as usize)? {
             SplitStreamData::External(id) => match header.entry_type() {
-                EntryType::Regular | EntryType::Continuous => Item::Regular {
-                    fsverity_digest: Some(hex::encode(id)),
-                    inline_content: None,
-                    nlink, size
-                },
+                EntryType::Regular | EntryType::Continuous => TarItem::Leaf(LeafContent::ExternalFile(id, size)),
                 _ => bail!("Unsupported external-chunked entry {:?} {}", header, hex::encode(id)),
             },
             SplitStreamData::Inline(content) => match header.entry_type() {
@@ -168,91 +168,60 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<En
                         } else if key == "linkpath" {
                             pax_longlink = Some(value);
                         } else if let Some(xattr) = key.strip_prefix("SCHILY.xattr.") {
-                            xattrs.push(Xattr {
-                                key: Cow::Owned(OsString::from(xattr)),
-                                value: Cow::Owned(value)
-                            });
+                            xattrs.push((OsString::from(xattr), value));
                         }
                     }
                     continue;
                 },
-                EntryType::Directory => Item::Directory { size, nlink },
-                EntryType::Regular | EntryType::Continuous => Item::Regular {
-                    fsverity_digest: None,
-                    inline_content: Some(content.into()),
-                    nlink, size
-                },
-                EntryType::Link => Item::Hardlink {
-                    target: {
-                        let Some(link_name) = header.link_name_bytes() else { bail!("link without a name?") };
-                        Cow::Owned(path_from_tar(pax_longlink, gnu_longlink, &link_name))
-                    }
-                },
-                EntryType::Symlink => Item::Symlink {
-                    target: {
-                        let Some(link_name) = header.link_name_bytes() else { bail!("symlink without a name?") };
-                        Cow::Owned(symlink_target_from_tar(pax_longlink, gnu_longlink, &link_name))
-                    },
-                    nlink
-                },
-                EntryType::Block | EntryType::Char => Item::Device {
-                    rdev: match (header.device_major()?, header.device_minor()?) {
+                EntryType::Directory => TarItem::Directory,
+                EntryType::Regular | EntryType::Continuous => TarItem::Leaf(LeafContent::InlineFile(content)),
+                EntryType::Link => TarItem::Hardlink({
+                    let Some(link_name) = header.link_name_bytes() else { bail!("link without a name?") };
+                    path_from_tar(pax_longlink, gnu_longlink, &link_name)
+                }),
+                EntryType::Symlink => TarItem::Leaf(LeafContent::Symlink({
+                    let Some(link_name) = header.link_name_bytes() else { bail!("symlink without a name?") };
+                    symlink_target_from_tar(pax_longlink, gnu_longlink, &link_name)
+                })),
+                EntryType::Block => TarItem::Leaf(LeafContent::BlockDevice(
+                    match (header.device_major()?, header.device_minor()?) {
                         (Some(major), Some(minor)) => makedev(major, minor),
                         _ => bail!("Device entry without device numbers?"),
-                    },
-                    nlink
-                },
-                EntryType::Fifo => Item::Fifo { nlink },
+                    }
+                )),
+                EntryType::Char => TarItem::Leaf(LeafContent::CharacterDevice(
+                    match (header.device_major()?, header.device_minor()?) {
+                        (Some(major), Some(minor)) => makedev(major, minor),
+                        _ => bail!("Device entry without device numbers?"),
+                    }
+                )),
+                EntryType::Fifo => TarItem::Leaf(LeafContent::Fifo),
                 _ => {
                     todo!("Unsupported entry {:?} {:?}", header, content);
                 }
             }
         };
 
-        let ifmt = match item {
-            Item::Directory { .. } => FileType::Directory,
-            Item::Regular { .. } => FileType::RegularFile,
-            Item::Device { .. } => if header.entry_type() == EntryType::Block {
-                FileType::BlockDevice
-            } else {
-                FileType::CharacterDevice
-            },
-            Item::Fifo { .. } => FileType::Fifo,
-            Item::Symlink { .. } => FileType::Symlink,
-            Item::Hardlink { .. } => {
-                // NB: For hardlinks we don't know the real type, but it's also not important:
-                // mkcomposefs will ignore it.  We need to fill something in, though.
-                FileType::RegularFile
-            },
-        }.as_raw_mode();
-
-        return Ok(Some(Entry {
-            path: Cow::Owned(path_from_tar(pax_longname, gnu_longname, &header.path_bytes())),
-            uid: header.uid()? as u32,
-            gid: header.gid()? as u32,
-            mode: header.mode()? | ifmt,
-            mtime: Mtime { sec: header.mtime()?, nsec: 0 },
-            item,
-            xattrs
+        return Ok(
+            Some(
+                TarEntry {
+                    path: path_from_tar(pax_longname, gnu_longname, &header.path_bytes()),
+                    stat: Stat {
+                        st_uid: header.uid()? as u32,
+                        st_gid: header.gid()? as u32,
+                        st_mode: header.mode()?,
+                        st_mtim_sec: header.mtime()? as i64,
+                        xattrs
+                    },
+                    item
         }));
     }
 }
 
 pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
-    // no root entry in the tar
-    println!("{}", Entry {
-        path: Cow::Borrowed(Path::new("/")),
-        uid: 0,
-        gid: 0,
-        mode: FileType::Directory.as_raw_mode() | 0o755,
-        mtime: Mtime { sec: 0, nsec: 0 },
-        item: Item::Directory { size: 0, nlink: 1 },
-        xattrs: vec![]
-    });
-
     let mut reader = SplitStreamReader::new(split_stream);
     while let Some(entry) = get_entry(&mut reader)? {
-        println!("{}", entry);
+        println!("{:?}", entry);
     }
     Ok(())
 }
