@@ -40,6 +40,9 @@ enum OciCommand {
         /// the name of the stream
         name: String,
     },
+    CreateImage {
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -116,6 +119,9 @@ fn main() -> Result<()> {
             },
             OciCommand::LsLayer { name } => {
                 oci::ls_layer(&repo, &name)?;
+            },
+            OciCommand::CreateImage { name } => {
+                oci::image(&repo, &name)?;
             },
         }
         Command::Mount { name, mountpoint } => {
