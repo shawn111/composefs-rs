@@ -127,28 +127,29 @@ fn write_entry(
 }
 
 pub fn write_directory(writer: &mut impl fmt::Write, path: &Path, stat: &Stat, nlink: usize) -> fmt::Result {
-    write_entry(writer, path, stat, FileType::Directory, 0, nlink, 0, &"", &[], None)
+    write_entry(writer, path, stat, FileType::Directory, 0, nlink, 0, "", &[], None)
 }
 
 pub fn write_leaf(writer: &mut impl fmt::Write, path: &Path, stat: &Stat, content: &LeafContent, nlink: usize) -> fmt::Result {
     match content {
         LeafContent::InlineFile(ref data) => write_entry(
-            writer, path, stat, FileType::RegularFile, data.len() as u64, nlink, 0, &"", data, None
+            writer, path, stat, FileType::RegularFile, data.len() as u64, nlink, 0, "", data, None
         ),
         LeafContent::ExternalFile(id, size) => write_entry(
-            writer, path, stat, FileType::RegularFile, *size, nlink, 0, &"", &[], Some(id)
+            writer, path, stat, FileType::RegularFile, *size, nlink, 0,
+            format!("{:02x}/{}", id[0], hex::encode(&id[1..])), &[], Some(id)
         ),
         LeafContent::BlockDevice(rdev) => write_entry(
-            writer, path, stat, FileType::BlockDevice, 0, nlink, *rdev, &"", &[], None
+            writer, path, stat, FileType::BlockDevice, 0, nlink, *rdev, "", &[], None
         ),
         LeafContent::CharacterDevice(rdev) => write_entry(
-            writer, path, stat, FileType::CharacterDevice, 0, nlink, *rdev, &"", &[], None
+            writer, path, stat, FileType::CharacterDevice, 0, nlink, *rdev, "", &[], None
         ),
         LeafContent::Fifo => write_entry(
-            writer, path, stat, FileType::Fifo, 0, nlink, 0, &"", &[], None
+            writer, path, stat, FileType::Fifo, 0, nlink, 0, "", &[], None
         ),
         LeafContent::Socket => write_entry(
-            writer, path, stat, FileType::Socket, 0, nlink, 0, &"", &[], None
+            writer, path, stat, FileType::Socket, 0, nlink, 0, "", &[], None
         ),
         LeafContent::Symlink(ref target) => write_entry(
             writer, path, stat, FileType::Symlink, target.as_bytes().len() as u64, nlink, 0, target, &[], None
@@ -158,9 +159,9 @@ pub fn write_leaf(writer: &mut impl fmt::Write, path: &Path, stat: &Stat, conten
 
 pub fn write_hardlink(writer: &mut impl fmt::Write, path: &Path, target: &OsStr) -> fmt::Result {
     write_escaped(writer, path.as_os_str().as_bytes())?;
-    write!(writer, " - @0 - - - - - ")?;
+    write!(writer, " 0 @120000 - - - - 0.0 ")?;
     write_escaped(writer, target.as_bytes())?;
-    writeln!(writer, " - -")?;
+    write!(writer, " - -")?;
     Ok(())
 }
 
@@ -226,5 +227,5 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
 }
 
 pub fn write_dumpfile<W: Write>(writer: &mut W, fs: &FileSystem) -> Result<()> {
-    Ok(DumpfileWriter::new(writer).write_dir(Path::new("/"), &fs.root)?)
+    DumpfileWriter::new(writer).write_dir(Path::new("/"), &fs.root)
 }

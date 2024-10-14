@@ -40,7 +40,11 @@ enum OciCommand {
         /// the name of the stream
         name: String,
     },
+    CreateDumpfile {
+        layers: Vec<String>,
+    },
     CreateImage {
+        name: String,
         layers: Vec<String>,
     },
 }
@@ -120,8 +124,12 @@ fn main() -> Result<()> {
             OciCommand::LsLayer { name } => {
                 oci::ls_layer(&repo, &name)?;
             },
-            OciCommand::CreateImage { layers } => {
-                oci::image::create_image(&repo, &layers)?;
+            OciCommand::CreateDumpfile { layers } => {
+                oci::image::create_dumpfile(&repo, &layers)?;
+            },
+            OciCommand::CreateImage { name, layers } => {
+                let image_id = oci::image::create_image(&repo, &name, &layers)?;
+                println!("{}", hex::encode(image_id));
             },
         }
         Command::Mount { name, mountpoint } => {

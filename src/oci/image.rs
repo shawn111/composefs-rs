@@ -1,6 +1,11 @@
 use std::{
     ffi::OsStr,
+    io::Read,
     os::unix::ffi::OsStrExt,
+    process::{
+        Command,
+        Stdio
+    },
 };
 
 use anyhow::{
@@ -9,6 +14,7 @@ use anyhow::{
 };
 use crate::{
     dumpfile::write_dumpfile,
+    fsverity::Sha256HashValue,
     image::{
         FileSystem,
         Leaf,
@@ -50,7 +56,7 @@ pub fn process_entry(filesystem: &mut FileSystem, entry: oci::tar::TarEntry) -> 
     Ok(())
 }
 
-pub fn create_image(repo: &Repository, layers: &Vec<String>) -> Result<()> {
+pub fn compose_filesystem(repo: &Repository, layers: &[String]) -> Result<FileSystem> {
     let mut filesystem = FileSystem::new();
 
     for layer in layers {
@@ -61,8 +67,45 @@ pub fn create_image(repo: &Repository, layers: &Vec<String>) -> Result<()> {
         }
     }
 
+    Ok(filesystem)
+}
+
+pub fn create_dumpfile(repo: &Repository, layers: &[String]) -> Result<()> {
+    let filesystem = compose_filesystem(repo, layers)?;
     let mut stdout = std::io::stdout();
     write_dumpfile(&mut stdout, &filesystem)?;
-
     Ok(())
+}
+
+pub fn create_image(repo: &Repository, name: &str, layers: &Vec<String>) -> Result<Sha256HashValue> {
+    let mut filesystem = FileSystem::new();
+
+    for layer in layers {
+        let mut split_stream = repo.open_stream(layer)?;
+        let mut reader = SplitStreamReader::new(&mut split_stream);
+        while let Some(entry) = oci::tar::get_entry(&mut reader)? {
+           process_entry(&mut filesystem, entry)?;
+        }
+    }
+
+    let mut mkcomposefs = Command::new("mkcomposefs")
+        .args(["--from-file", "-", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = mkcomposefs.stdin.take().unwrap();
+    write_dumpfile(&mut stdin, &filesystem)?;
+    drop(stdin);
+
+    let mut stdout = mkcomposefs.stdout.take().unwrap();
+    let mut image = vec![];
+    stdout.read_to_end(&mut image)?;
+    drop(stdout);
+
+    if !mkcomposefs.wait()?.success() {
+        bail!("mkcomposefs failed");
+    };
+
+    repo.write_image(name, &image)
 }

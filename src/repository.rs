@@ -285,11 +285,16 @@ impl Repository {
     }
 
     /// this function is not safe for untrusted users
+    pub fn write_image(&self, name: &str, data: &[u8]) -> Result<Sha256HashValue> {
+        let object_id = self.ensure_object(data)?;
+        self.link_ref(name, "images", object_id)
+    }
+
+    /// this function is not safe for untrusted users
     pub fn import_image<R: Read>(&self, name: &str, image: &mut R) -> Result<Sha256HashValue> {
         let mut data = vec![];
         image.read_to_end(&mut data)?;
-        let object_id = self.ensure_object(&data)?;
-        self.link_ref(name, "images", object_id)
+        self.write_image(name, &data)
     }
 
     pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
@@ -305,8 +310,8 @@ impl Repository {
         let category_path = format!("{}/{}", category, hex::encode(object_id));
         let ref_path = format!("{}/refs/{}", category, name);
 
+        self.ensure_symlink(&category_path, &object_path)?;
         self.symlink(&ref_path, &category_path)?;
-        self.symlink(&category_path, &object_path)?;
         Ok(object_id)
     }
 
