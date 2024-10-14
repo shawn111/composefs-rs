@@ -133,6 +133,10 @@ impl Directory {
             _ => { /* not an error to remove an already-missing file */ }
         }
     }
+
+    pub fn remove_all(&mut self) {
+        self.entries.clear();
+    }
 }
 
 pub struct FileSystem {
