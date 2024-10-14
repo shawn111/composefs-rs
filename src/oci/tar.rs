@@ -3,6 +3,7 @@ use std::{
         OsStr,
         OsString,
     },
+    fmt,
     os::unix::prelude::{
         OsStrExt,
         OsStringExt,
@@ -23,6 +24,7 @@ use tar::{
 };
 
 use crate::{
+    dumpfile,
     image::{
         LeafContent,
         Stat,
@@ -81,7 +83,7 @@ pub fn split<R: Read>(
 pub enum TarItem {
     Directory,
     Leaf(LeafContent),
-    Hardlink(PathBuf),
+    Hardlink(OsString),
 }
 
 #[derive(Debug)]
@@ -89,6 +91,16 @@ pub struct TarEntry {
     pub path: PathBuf,
     pub stat: Stat,
     pub item: TarItem,
+}
+
+impl fmt::Display for TarEntry {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self.item {
+            TarItem::Hardlink(ref target) => dumpfile::write_hardlink(fmt, &self.path, target),
+            TarItem::Directory => dumpfile::write_directory(fmt, &self.path, &self.stat, 1),
+            TarItem::Leaf(ref content) => dumpfile::write_leaf(fmt, &self.path, &self.stat, content, 1),
+        }
+    }
 }
 
 fn path_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {
@@ -112,13 +124,13 @@ fn path_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(path))
 }
 
-fn symlink_target_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> PathBuf {
+fn symlink_target_from_tar(pax: Option<Vec<u8>>, gnu: Vec<u8>, short: &[u8]) -> OsString {
     if let Some(name) = pax {
-        PathBuf::from(OsString::from_vec(name))
+        OsString::from_vec(name)
     } else if !gnu.is_empty() {
-        PathBuf::from(OsString::from_vec(gnu))
+        OsString::from_vec(gnu)
     } else {
-        PathBuf::from(OsStr::from_bytes(short))
+        OsString::from(OsStr::from_bytes(short))
     }
 }
 
@@ -177,7 +189,7 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Ta
                 EntryType::Regular | EntryType::Continuous => TarItem::Leaf(LeafContent::InlineFile(content)),
                 EntryType::Link => TarItem::Hardlink({
                     let Some(link_name) = header.link_name_bytes() else { bail!("link without a name?") };
-                    path_from_tar(pax_longlink, gnu_longlink, &link_name)
+                    OsString::from(path_from_tar(pax_longlink, gnu_longlink, &link_name))
                 }),
                 EntryType::Symlink => TarItem::Leaf(LeafContent::Symlink({
                     let Some(link_name) = header.link_name_bytes() else { bail!("symlink without a name?") };
@@ -216,12 +228,4 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Ta
                     item
         }));
     }
-}
-
-pub fn ls<R: Read>(split_stream: &mut R) -> Result<()> {
-    let mut reader = SplitStreamReader::new(split_stream);
-    while let Some(entry) = get_entry(&mut reader)? {
-        println!("{:?}", entry);
-    }
-    Ok(())
 }

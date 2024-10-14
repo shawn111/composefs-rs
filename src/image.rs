@@ -3,10 +3,7 @@ use std::{
         OsStr,
         OsString,
     },
-    path::{
-        Path,
-        PathBuf,
-    },
+    path::Path,
     rc::Rc,
 };
 
@@ -34,7 +31,7 @@ pub enum LeafContent {
     CharacterDevice(u64),
     Fifo,
     Socket,
-    Symlink(PathBuf),
+    Symlink(OsString),
 }
 
 #[derive(Debug)]
@@ -205,8 +202,8 @@ impl FileSystem {
         }
     }
 
-    pub fn hardlink(&mut self, name: &Path, target: &Path) -> Result<()> {
-        let rc = self.get_for_link(target)?;
+    pub fn hardlink(&mut self, name: &Path, target: &OsStr) -> Result<()> {
+        let rc = self.get_for_link(Path::new(target))?;
         self.insert_rc(name, rc)
     }
 

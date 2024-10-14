@@ -8,6 +8,8 @@ use anyhow::Result;
 use crate::{
     fsverity::Sha256HashValue,
     repository::Repository,
+    splitstream::SplitStreamReader,
+    oci::tar::get_entry,
 };
 
 pub fn import_layer<R: Read>(repo: &Repository, name: &str, tar_stream: &mut R) -> Result<Sha256HashValue> {
@@ -28,5 +30,12 @@ pub fn import_layer_by_sha256<R: Read>(
 }
 
 pub fn ls_layer(repo: &Repository, name: &str) -> Result<()> {
-    tar::ls(&mut repo.open_stream(name)?)
+    let split_stream = &mut repo.open_stream(name)?;
+    let mut reader = SplitStreamReader::new(split_stream);
+
+    while let Some(entry) = get_entry(&mut reader)? {
+        println!("{}", entry);
+    }
+
+    Ok(())
 }
