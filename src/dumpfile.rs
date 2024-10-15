@@ -5,7 +5,10 @@ use std::{
         OsString,
     },
     fmt,
-    io::Write,
+    io::{
+        BufWriter,
+        Write,
+    },
     os::unix::ffi::OsStrExt,
     path::{
         PathBuf,
@@ -229,5 +232,14 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
 }
 
 pub fn write_dumpfile<W: Write>(writer: &mut W, fs: &FileSystem) -> Result<()> {
-    DumpfileWriter::new(writer).write_dir(&mut PathBuf::from("/"), &fs.root)
+    // default pipe capacity on Linux is 16 pages (65536 bytes), but
+    // sometimes the BufWriter will write more than its capacity...
+    let mut buffer = BufWriter::with_capacity(32768, writer);
+    let mut dfw = DumpfileWriter::new(&mut buffer);
+    let mut path = PathBuf::from("/");
+
+    dfw.write_dir(&mut path, &fs.root)?;
+    buffer.flush()?;
+
+    Ok(())
 }
