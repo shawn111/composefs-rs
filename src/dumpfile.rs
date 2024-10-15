@@ -149,7 +149,7 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
         Self { hardlinks: HashMap::new(), writer }
     }
 
-    fn write_dir(&mut self, mut path: &mut PathBuf, dir: &Directory) -> Result<()> {
+    fn write_dir(&mut self, path: &mut PathBuf, dir: &Directory) -> Result<()> {
         // nlink is 2 + number of subdirectories
         // this is also true for the root dir since '..' is another self-ref
         let nlink = dir.entries.iter().fold(2, |count, ent| count + {
@@ -166,10 +166,10 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
 
             match inode {
                 Inode::Directory(ref dir) => {
-                    self.write_dir(&mut path, dir)?;
+                    self.write_dir(path, dir)?;
                 },
                 Inode::Leaf(ref leaf) => {
-                    self.write_leaf(&path, leaf)?;
+                    self.write_leaf(path, leaf)?;
                 }
             }
 
@@ -185,14 +185,14 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
             // This is a hardlink.  We need to handle that specially.
             let ptr = Rc::as_ptr(leaf);
             if let Some(target) = self.hardlinks.get(&ptr) {
-                return writeln_fmt(self.writer, |fmt| write_hardlink(fmt, &path, target));
+                return writeln_fmt(self.writer, |fmt| write_hardlink(fmt, path, target));
             }
 
             // @path gets modified all the time, so take a copy
             self.hardlinks.insert(ptr, OsString::from(&path));
         }
 
-        writeln_fmt(self.writer, |fmt| write_leaf(fmt, &path, &leaf.stat, &leaf.content, nlink))
+        writeln_fmt(self.writer, |fmt| write_leaf(fmt, path, &leaf.stat, &leaf.content, nlink))
     }
 }
 

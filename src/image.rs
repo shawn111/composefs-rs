@@ -71,8 +71,8 @@ impl Directory {
         // iteration of the binary search.
         if let Some(last_entry) = self.entries.last() {
             match name.cmp(&last_entry.name) {
-                Ordering::Equal => return Ok(self.entries.len() - 1), // the last item, indeed
-                Ordering::Greater => return Err(self.entries.len()),  // need to append
+                Ordering::Equal => Ok(self.entries.len() - 1), // the last item, indeed
+                Ordering::Greater => Err(self.entries.len()),  // need to append
                 Ordering::Less => self.entries.binary_search_by_key(&name, |e| &e.name)
             }
         } else {

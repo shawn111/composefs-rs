@@ -33,9 +33,8 @@ pub fn process_entry(filesystem: &mut FileSystem, entry: oci::tar::TarEntry) -> 
 
     let mut dir = &mut filesystem.root;
     for component in components {
-        match component {
-            Component::Normal(name) => { dir = dir.recurse(name)?; },
-            _ => { }
+        if let Component::Normal(name) = component {
+            dir = dir.recurse(name)?;
         }
     }
 
@@ -153,7 +152,7 @@ fn assert_files(fs: &FileSystem, expected: &[&str]) -> Result<()> {
     write_dumpfile(&mut out, fs)?;
     let actual: Vec<String> = out
         .lines()
-        .map(|line| line.unwrap().split_once(|c| c == ' ').unwrap().0.into() )
+        .map(|line| line.unwrap().split_once(' ').unwrap().0.into() )
         .collect();
 
     assert_eq!(actual, expected);
