@@ -55,47 +55,6 @@ fn write_escaped(writer: &mut impl fmt::Write, bytes: &[u8]) -> fmt::Result {
     Ok(())
 }
 
-/*
-struct Entry<'a> {
-    path: &'a Path,
-    stat: &'a Stat,
-    ifmt: FileType,
-    size: u64,
-    nlink: usize,
-    rdev: u64,
-    payload: &'a OsStr,
-    content: &'a [u8],
-    digest: Option<&'a Sha256HashValue>
-}
-
-impl<'a> fmt::Display for Entry<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let size = self.size;
-        let mode = self.stat.st_mode | self.ifmt.as_raw_mode();
-        let nlink = self.nlink;
-        let uid = self.stat.st_uid;
-        let gid = self.stat.st_gid;
-        let rdev = self.rdev;
-        let mtim_sec = self.stat.st_mtim_sec;
-
-        write_escaped(f, self.path.as_os_str().as_bytes());
-        write!(f, " {size} {mode:o} {nlink} {uid} {gid} {rdev} {mtim_sec}.0 ")?;
-        write_escaped(f, self.payload.as_bytes())?;
-        write!(f, " ")?;
-        write_escaped(f, self.content)?;
-        write!(f, " ")?;
-        if let Some(id) = self.digest {
-            write!(f, "{}", hex::encode(id))?;
-        } else {
-            write_empty(f)?;
-        }
-
-        // TODO: xattrs
-        Ok(())
-    }
-}
-*/
-
 fn write_entry(
     writer: &mut impl fmt::Write,
     path: &Path,
@@ -125,7 +84,13 @@ fn write_entry(
         write_empty(writer)?;
     }
 
-    // TODO: xattrs
+    for (key, value) in &stat.xattrs {
+        write!(writer, " ")?;
+        write_escaped(writer, key.as_bytes())?;
+        write!(writer, "=")?;
+        write_escaped(writer, value)?;
+    }
+
     Ok(())
 }
 
