@@ -21,24 +21,30 @@ use anyhow::{
     Result,
     bail,
 };
-use rustix::fs::{
-    FileType,
-    Dir,
-    Access,
-    AtFlags,
-    CWD,
-    FlockOperation,
-    Mode,
-    OFlags,
-    accessat,
-    fdatasync,
-    flock,
-    linkat,
-    mkdirat,
-    open,
-    openat,
-    readlinkat,
-    symlinkat,
+use rustix::{
+    fs::{
+        FileType,
+        Dir,
+        Access,
+        AtFlags,
+        CWD,
+        FlockOperation,
+        Mode,
+        OFlags,
+        accessat,
+        fdatasync,
+        flock,
+        linkat,
+        mkdirat,
+        open,
+        openat,
+        readlinkat,
+        symlinkat,
+    },
+    io::{
+        Errno,
+        Result as ErrnoResult
+    },
 };
 
 use crate::{
@@ -95,22 +101,9 @@ impl Repository {
         Repository::open_path(PathBuf::from("/sysroot/composefs".to_string()))
     }
 
-    fn ensure_parent<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        match path.as_ref().parent() {
-            None => Ok(()),
-            Some(path) if path == Path::new("") => Ok(()),
-            Some(parent) => self.ensure_dir(parent)
-        }
-    }
-
-    fn ensure_dir<P: AsRef<Path>>(&self, dir: P) -> Result<()> {
-        self.ensure_parent(&dir)?;
-
-        match mkdirat(&self.repository, dir.as_ref(), 0o777.into()) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
-            Err(err) => Err(err.into())
-        }
+    fn ensure_dir(&self, dir: impl AsRef<Path>) -> ErrnoResult<()> {
+        mkdirat(&self.repository, dir.as_ref(), 0o755.into())
+            .or_else(|e| match e { Errno::EXIST => Ok(()), _ => Err(e) })
     }
 
     pub fn exists(&self, name: &str) -> Result<bool> {
@@ -126,10 +119,12 @@ impl Repository {
         let dir = PathBuf::from(format!("objects/{:02x}", digest[0]));
         let file = dir.join(hex::encode(&digest[1..]));
 
+        // fairly common...
         if accessat(&self.repository, &file, Access::READ_OK, AtFlags::empty()) == Ok(()) {
             return Ok(digest);
         }
 
+        self.ensure_dir("objects")?;
         self.ensure_dir(&dir)?;
 
         let fd = openat(&self.repository, &dir, OFlags::RDWR | OFlags::CLOEXEC | OFlags::TMPFILE, 0o666.into())?;
@@ -315,40 +310,39 @@ impl Repository {
         Ok(object_id)
     }
 
-    pub fn symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> Result<()> {
+    pub fn symlink(&self, name: impl AsRef<Path>, target: impl AsRef<Path>) -> ErrnoResult<()> {
         let name = name.as_ref();
-        let parent = name.parent()
-            .expect("make_link() called for file directly in repo top-level");
-        self.ensure_dir(parent)?;
 
-        let mut target_path = PathBuf::new();
-        for _ in parent.iter() {
-            target_path.push("..");
+        let mut symlink_components = name.parent().unwrap().components().peekable();
+        let mut target_components = target.as_ref().components().peekable();
+
+        let mut symlink_ancestor = PathBuf::new();
+
+        // remove common leading components
+        while symlink_components.peek() == target_components.peek() {
+            symlink_ancestor.push(symlink_components.next().unwrap());
+            target_components.next().unwrap();
         }
-        target_path.push(target);
 
-        Ok(symlinkat(target_path, &self.repository, name)?)
+        let mut relative = PathBuf::new();
+        // prepend a "../" for each ancestor of the symlink
+        // and create those ancestors as we do so
+        for symlink_component in symlink_components {
+            symlink_ancestor.push(symlink_component);
+            self.ensure_dir(&symlink_ancestor)?;
+            relative.push("..");
+        }
+
+        // now build the relative path from the remaining components of the target
+        for target_component in target_components {
+            relative.push(target_component);
+        }
+
+        symlinkat(relative, &self.repository, name)
     }
 
-    // TODO: more DRY with the above function plz
-    pub fn ensure_symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> Result<()> {
-        let name = name.as_ref();
-        let parent = name.parent()
-            .expect("make_link() called for file directly in repo top-level");
-        self.ensure_dir(parent)?;
-
-        let mut target_path = PathBuf::new();
-        for _ in parent.iter() {
-            target_path.push("..");
-        }
-        target_path.push(target);
-
-        match symlinkat(target_path, &self.repository, name) {
-            Ok(()) => Ok(()),
-            // NB: we assume that the link is the same
-            Err(ref e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(e)?
-        }
+    pub fn ensure_symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> ErrnoResult<()> {
+        self.symlink(name, target).or_else(|e| match e { Errno::EXIST => Ok(()), _ => Err(e) })
     }
 
     fn read_symlink_hashvalue(dirfd: &OwnedFd, name: &CStr) -> Result<Sha256HashValue> {
