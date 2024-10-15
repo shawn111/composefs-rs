@@ -171,7 +171,7 @@ struct DumpfileWriter<'a, W: Write> {
 }
 
 fn writeln_fmt(writer: &mut impl Write, f: impl Fn(&mut String) -> fmt::Result) -> Result<()> {
-    let mut tmp = String::new();
+    let mut tmp = String::with_capacity(256);
     f(&mut tmp)?;
     Ok(writeln!(writer, "{}", tmp)?)
 }
@@ -181,7 +181,7 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
         Self { hardlinks: HashMap::new(), writer }
     }
 
-    fn write_dir(&mut self, path: &Path, dir: &Directory) -> Result<()> {
+    fn write_dir(&mut self, mut path: &mut PathBuf, dir: &Directory) -> Result<()> {
         // nlink is 2 + number of subdirectories
         // this is also true for the root dir since '..' is another self-ref
         let nlink = dir.entries.iter().fold(2, |count, ent| count + {
@@ -194,21 +194,23 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
         writeln_fmt(self.writer, |fmt| write_directory(fmt, path, &dir.stat, nlink))?;
 
         for DirEnt { name, inode } in dir.entries.iter() {
-            let subpath = path.join(name);
+            path.push(name);
 
             match inode {
                 Inode::Directory(ref dir) => {
-                    self.write_dir(&subpath, dir)?;
+                    self.write_dir(&mut path, dir)?;
                 },
                 Inode::Leaf(ref leaf) => {
-                    self.write_leaf(subpath, leaf)?;
+                    self.write_leaf(&path, leaf)?;
                 }
             }
+
+            path.pop();
         }
         Ok(())
     }
 
-    fn write_leaf(&mut self, path: PathBuf, leaf: &Rc<Leaf>) -> Result<()> {
+    fn write_leaf(&mut self, path: &Path, leaf: &Rc<Leaf>) -> Result<()> {
         let nlink = Rc::strong_count(leaf);
 
         if nlink > 1 {
@@ -217,8 +219,8 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
             if let Some(target) = self.hardlinks.get(&ptr) {
                 return writeln_fmt(self.writer, |fmt| write_hardlink(fmt, &path, target));
             }
-            // TODO: can we figure out a way to _move_ this into the hash
-            // table and keep a reference to it so we can do the print below?
+
+            // @path gets modified all the time, so take a copy
             self.hardlinks.insert(ptr, OsString::from(&path));
         }
 
@@ -227,5 +229,5 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
 }
 
 pub fn write_dumpfile<W: Write>(writer: &mut W, fs: &FileSystem) -> Result<()> {
-    DumpfileWriter::new(writer).write_dir(Path::new("/"), &fs.root)
+    DumpfileWriter::new(writer).write_dir(&mut PathBuf::from("/"), &fs.root)
 }
