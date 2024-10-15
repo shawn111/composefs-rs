@@ -1,4 +1,8 @@
 use std::{
+    cmp::{
+        Ord,
+        Ordering,
+    },
     ffi::{
         OsStr,
         OsString,
@@ -60,10 +64,20 @@ pub struct DirEnt {
 
 impl Directory {
     pub fn find_entry(&self, name: &OsStr) -> Result<usize, usize> {
-        // performance TODO: on the first pass through we'll almost always want the last entry
-        // (since the layer is sorted and we're always inserting into the directory that we just
-        // created) maybe add a special case for that?
-        self.entries.binary_search_by_key(&name, |e| &e.name)
+        // OCI layer tarballs are typically sorted, with the entries for a particular directory
+        // written out immediately after that directory was created.  That means that it's very
+        // likely that the thing we're looking for is either the last entry or the insertion point
+        // immediately following it.  Fast-path those cases by essentially unrolling the first
+        // iteration of the binary search.
+        if let Some(last_entry) = self.entries.last() {
+            match name.cmp(&last_entry.name) {
+                Ordering::Equal => return Ok(self.entries.len() - 1), // the last item, indeed
+                Ordering::Greater => return Err(self.entries.len()),  // need to append
+                Ordering::Less => self.entries.binary_search_by_key(&name, |e| &e.name)
+            }
+        } else {
+            Err(0)
+        }
     }
 
     pub fn recurse<'a>(&'a mut self, name: &OsStr) -> Result<&'a mut Directory> {
