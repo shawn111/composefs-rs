@@ -55,6 +55,7 @@ fn write_escaped(writer: &mut impl fmt::Write, bytes: &[u8]) -> fmt::Result {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_entry(
     writer: &mut impl fmt::Write,
     path: &Path,
