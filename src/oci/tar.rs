@@ -209,7 +209,7 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Ta
                 )),
                 EntryType::Fifo => TarItem::Leaf(LeafContent::Fifo),
                 _ => {
-                    todo!("Unsupported entry {:?} {:?}", header, content);
+                    todo!("Unsupported entry {:?}", header);
                 }
             }
         };

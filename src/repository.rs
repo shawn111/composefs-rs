@@ -3,7 +3,6 @@ use std::{
     ffi::CStr,
     fs::File,
     io::{
-        BufReader,
         ErrorKind,
         Read,
         Write,
@@ -59,9 +58,8 @@ use crate::{
     },
     mount::mount_fd,
     splitstream::{
-        splitstream_merge,
-        splitstream_objects,
         SplitStreamWriter,
+        SplitStreamReader,
     },
     util::proc_self_fd,
 };
@@ -185,7 +183,7 @@ impl Repository {
     /// You should write the data to the returned object and then pass it to .store_stream() to
     /// store the result.
     pub fn create_stream(&self, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
-        SplitStreamWriter::new(self, sha256)
+        SplitStreamWriter::new(self, None, sha256)
     }
 
     /// Consumes the SplitStreamWriter, stores the splitstream in the object store (if it's not
@@ -255,9 +253,9 @@ impl Repository {
         }
     }
 
-    pub fn open_stream(&self, name: &str) -> Result<zstd::stream::read::Decoder<BufReader<File>>> {
+    pub fn open_stream(&self, name: &str) -> Result<SplitStreamReader<File>> {
         let file = File::from(self.open_in_category("streams", name)?);
-        Ok(zstd::stream::read::Decoder::new(file)?)
+        SplitStreamReader::new(file)
     }
 
     fn open_object(&self, id: Sha256HashValue) -> Result<OwnedFd> {
@@ -266,12 +264,11 @@ impl Repository {
 
     pub fn merge_splitstream<W: Write>(&self, name: &str, stream: &mut W) -> Result<()> {
         let mut split_stream = self.open_stream(name)?;
-        splitstream_merge(
-            &mut split_stream,
+        split_stream.cat(
             stream,
-            |id: Sha256HashValue| -> Result<Vec<u8>> {
+            |id| -> Result<Vec<u8>> {
                 let mut data = vec![];
-                File::from(self.open_object(id)?).read_to_end(&mut data)?;
+                File::from(self.open_object(*id)?).read_to_end(&mut data)?;
                 Ok(data)
             }
         )?;
@@ -462,11 +459,10 @@ impl Repository {
             objects.insert(object);
 
             let mut split_stream = self.open_stream(&hex::encode(object))?;
-            splitstream_objects(
-                &mut split_stream,
-                |obj: Sha256HashValue| {
-                    println!("   with {}", hex::encode(obj));
-                    objects.insert(obj);
+            split_stream.get_object_refs(
+                |id| {
+                    println!("   with {}", hex::encode(*id));
+                    objects.insert(*id);
                 }
             )?;
         }

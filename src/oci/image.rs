@@ -23,7 +23,6 @@ use crate::{
     },
     oci,
     repository::Repository,
-    splitstream::SplitStreamReader,
 };
 
 pub fn process_entry(filesystem: &mut FileSystem, entry: oci::tar::TarEntry) -> Result<()> {
@@ -68,8 +67,7 @@ pub fn compose_filesystem(repo: &Repository, layers: &[String]) -> Result<FileSy
 
     for layer in layers {
         let mut split_stream = repo.open_stream(layer)?;
-        let mut reader = SplitStreamReader::new(&mut split_stream);
-        while let Some(entry) = oci::tar::get_entry(&mut reader)? {
+        while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
            process_entry(&mut filesystem, entry)?;
         }
     }
@@ -89,8 +87,7 @@ pub fn create_image(repo: &Repository, name: &str, layers: &Vec<String>) -> Resu
 
     for layer in layers {
         let mut split_stream = repo.open_stream(layer)?;
-        let mut reader = SplitStreamReader::new(&mut split_stream);
-        while let Some(entry) = oci::tar::get_entry(&mut reader)? {
+        while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
            process_entry(&mut filesystem, entry)?;
         }
     }

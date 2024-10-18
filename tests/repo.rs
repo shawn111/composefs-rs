@@ -12,7 +12,6 @@ use anyhow::{
 use composefs_experiments::{
     oci,
     repository::Repository,
-    splitstream::SplitStreamReader,
 };
 
 fn append_data(builder: &mut tar::Builder<Vec<u8>>, name: &str, size: usize) -> Result<()> {
@@ -55,8 +54,7 @@ fn test_layer() -> Result<()> {
 
     let mut dump = String::new();
     let mut split_stream = repo.open_stream("refs/name")?;
-    let mut reader = SplitStreamReader::new(&mut split_stream);
-    while let Some(entry) = oci::tar::get_entry(&mut reader)? {
+    while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
         writeln!(dump, "{}", entry)?;
     }
     assert_eq!(dump, "\

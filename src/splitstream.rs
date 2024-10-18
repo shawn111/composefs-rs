@@ -3,12 +3,10 @@
  * See doc/splitstream.md
  */
 
-use std::{
-    collections::VecDeque,
-    io::{
-        Read,
-        Write,
-    },
+use std::io::{
+    BufReader,
+    Read,
+    Write,
 };
 
 use anyhow::{
@@ -18,6 +16,10 @@ use anyhow::{
 use sha2::{
     Digest,
     Sha256
+};
+use zstd::stream::{
+    write::Encoder,
+    read::Decoder,
 };
 
 use crate::{
@@ -29,28 +31,75 @@ use crate::{
     util::read_exactish,
 };
 
-// utility class to help write splitstreams
-type SplitStreamZstdEncoder = zstd::stream::write::Encoder<'static, Vec<u8>>;
+pub struct DigestMapEntry {
+    body: Sha256HashValue,
+    verity: Sha256HashValue,
+}
+
+pub struct DigestMap {
+    pub map: Vec<DigestMapEntry>
+}
+
+impl Default for DigestMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DigestMap {
+    pub fn new() -> Self {
+        DigestMap { map: vec![] }
+    }
+
+    pub fn lookup(&self, body: &Sha256HashValue) -> Option<&Sha256HashValue> {
+        match self.map.binary_search_by_key(body, |e| e.body) {
+            Ok(idx) => Some(&self.map[idx].verity),
+            Err(..) => None
+        }
+    }
+
+    pub fn insert(&mut self, entry: DigestMapEntry) {
+        match self.map.binary_search_by_key(&entry.body, |e| e.body) {
+            Ok(idx) => self.map[idx] = entry,
+            Err(idx) => self.map.insert(idx, entry),
+        }
+    }
+}
 
 pub struct SplitStreamWriter<'a> {
     repo: &'a Repository,
     inline_content: Vec<u8>,
-    writer: SplitStreamZstdEncoder,
+    writer: Encoder<'a, Vec<u8>>,
     sha256: Option<(Sha256, Sha256HashValue)>,
 }
 
 impl<'a> SplitStreamWriter<'a> {
-    pub fn new(repo: &Repository, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
+    pub fn new(repo: &Repository, refs: Option<DigestMap>, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
+        // SAFETY: we surely can't get an error writing the header to a Vec<u8>
+        let mut writer = zstd::stream::write::Encoder::new(vec![], 0).unwrap();
+
+        match refs {
+            Some(DigestMap { map }) => {
+                writer.write_all(&(map.len() as u64).to_le_bytes()).unwrap();
+                for ref entry in map {
+                    writer.write_all(&entry.body).unwrap();
+                    writer.write_all(&entry.verity).unwrap();
+                }
+            },
+            None => {
+                writer.write_all(&0u64.to_le_bytes()).unwrap();
+            }
+        }
+
         SplitStreamWriter {
             repo,
             inline_content: vec![],
-            // SAFETY: we surely can't get an error writing the header to a Vec<u8>
-            writer: zstd::stream::write::Encoder::new(vec![], 0).unwrap(),
+            writer,
             sha256: sha256.map(|x| (Sha256::new(), x))
         }
     }
 
-    fn write_fragment(writer: &mut SplitStreamZstdEncoder, size: usize, data: &[u8]) -> Result<()> {
+    fn write_fragment(writer: &mut impl Write, size: usize, data: &[u8]) -> Result<()> {
         writer.write_all(&(size as u64).to_le_bytes())?;
         Ok(writer.write_all(data)?)
     }
@@ -111,103 +160,164 @@ pub enum SplitStreamData {
     External(Sha256HashValue),
 }
 
-pub fn read_splitstream_chunk<R: Read>(reader: &mut R) -> Result<Option<SplitStreamData>> {
-    let mut buf = [0u8; 8];
-    match read_exactish(reader, &mut buf)? {
-        false => Ok(None),
-        true => match u64::from_le_bytes(buf) as usize {
-            0 => {
-                let mut data = Sha256HashValue::EMPTY;
-                reader.read_exact(&mut data)?;
-                Ok(Some(SplitStreamData::External(data)))
-            },
-            size => {
-                let mut data = vec![0u8; size];
-                reader.read_exact(&mut data)?;
-                Ok(Some(SplitStreamData::Inline(data)))
-            }
-        }
-    }
-}
-
 // utility class to help read splitstreams
-pub struct SplitStreamReader<'w, R: Read> {
-    inline_content: VecDeque<u8>,
-    reader: &'w mut R
+pub struct SplitStreamReader<R: Read> {
+    decoder: Decoder<'static, BufReader<R>>,
+    refs: DigestMap,
+    inline_bytes: usize,
 }
 
-impl<'r, R: Read> SplitStreamReader<'r, R> {
-    pub fn new(reader: &'r mut R) -> SplitStreamReader<'r, R> {
-        SplitStreamReader { inline_content: VecDeque::new(), reader }
+fn read_u64_le<R: Read>(reader: &mut R) -> Result<Option<usize>> {
+    let mut buf = [0u8; 8];
+    if read_exactish(reader, &mut buf)? {
+        Ok(Some(u64::from_le_bytes(buf) as usize))
+    } else {
+        Ok(None)
     }
+}
 
-    /// assumes that the data cannot be split across chunks
-    pub fn read_inline_exact(&mut self, data: &mut [u8]) -> Result<bool> {
-        if self.inline_content.is_empty() {
-            match read_splitstream_chunk(&mut self.reader)? {
-                None => { return Ok(false); }
-                Some(SplitStreamData::Inline(data)) => { self.inline_content = data.into() },
-                Some(SplitStreamData::External(_)) => { bail!("Expecting inline data but found external chunk") }
-            }
+fn read_into_vec(reader: &mut impl Read, vec: &mut Vec<u8>, size: usize) -> Result<()> {
+    unsafe {
+        vec.truncate(0);
+        vec.reserve(size);
+        reader.read_exact(std::slice::from_raw_parts_mut(vec.as_mut_ptr(), size))?;
+        vec.set_len(size);
+    }
+    Ok(())
+}
+
+enum ChunkType {
+    Eof,
+    Inline,
+    External(Sha256HashValue),
+}
+
+impl<R: Read> SplitStreamReader<R> {
+    pub fn new(reader: R) -> Result<SplitStreamReader<R>> {
+        let mut decoder = Decoder::new(reader)?;
+
+        let n_map_entries = {
+            let mut buf = [0u8; 8];
+            decoder.read_exact(&mut buf)?;
+            u64::from_le_bytes(buf)
+        } as usize;
+
+        let mut refs = DigestMap { map: Vec::with_capacity(n_map_entries) };
+        for _ in 0..n_map_entries {
+            let mut body = [0u8; 32];
+            let mut verity = [0u8; 32];
+
+            decoder.read_exact(&mut body)?;
+            decoder.read_exact(&mut verity)?;
+            refs.map.push(DigestMapEntry { body, verity });
         }
 
-        self.inline_content.read_exact(data)?;
-        Ok(true)
+        Ok(SplitStreamReader { decoder, refs, inline_bytes: 0 })
     }
 
-    pub fn read_exact(&mut self, actual_size: usize, stored_size: usize) -> Result<SplitStreamData> {
-        if self.inline_content.is_empty() {
-            match read_splitstream_chunk(&mut self.reader)? {
-                None => { bail!("Unexpected EOF") },
-                Some(SplitStreamData::Inline(data)) => { self.inline_content = data.into() },
-                Some(ext) => {
-                    if actual_size != stored_size {
-                        // need to eat the padding...
-                        match read_splitstream_chunk(&mut self.reader)? {
-                            None => { bail!("bad eof") },
-                            Some(SplitStreamData::Inline(data)) => { self.inline_content = data.into() },
-                            Some(SplitStreamData::External(_)) => { bail!("Expecting inline data but found external chunk") }
-                        }
-                        // TODO: make this suck less
-                        let mut padding = vec![0u8; stored_size - actual_size];
-                        self.inline_content.read_exact(&mut padding)?;
+    fn ensure_chunk(&mut self, eof_ok: bool, ext_ok: bool, expected_bytes: usize) -> Result<ChunkType> {
+        if self.inline_bytes == 0 {
+            match read_u64_le(&mut self.decoder)? {
+                None => {
+                    if !eof_ok {
+                        bail!("Unexpected EOF when parsing splitstream");
                     }
-
-                    return Ok(ext)
+                    return Ok(ChunkType::Eof);
+                },
+                Some(0) => {
+                    if !ext_ok {
+                        bail!("Unexpected external reference when parsing splitstream");
+                    }
+                    let mut id = Sha256HashValue::EMPTY;
+                    self.decoder.read_exact(&mut id)?;
+                    return Ok(ChunkType::External(id));
+                }
+                Some(size) => {
+                    self.inline_bytes = size;
                 }
             }
         }
 
-        // must be inline
-        let mut data = vec![0u8; stored_size];
-        self.inline_content.read_exact(&mut data)?;
-        data.truncate(actual_size);
-        Ok(SplitStreamData::Inline(data))
-    }
-}
+        if self.inline_bytes < expected_bytes {
+            bail!("Unexpectedly small inline content when parsing splitstream");
+        }
 
-pub fn splitstream_merge<R: Read, W: Write, F: FnMut(Sha256HashValue) -> Result<Vec<u8>>>(
-    split_stream: &mut R, result: &mut W, mut load_data: F,
-) -> Result<()> {
-    while let Some(data) = read_splitstream_chunk(split_stream)? {
-        match data {
-            SplitStreamData::Inline(data) => result.write_all(&data)?,
-            SplitStreamData::External(id) => result.write_all(&load_data(id)?)?,
+        Ok(ChunkType::Inline)
+    }
+
+    /// Reads the exact number of inline bytes
+    /// Assumes that the data cannot be split across chunks
+    pub fn read_inline_exact(&mut self, buffer: &mut [u8]) -> Result<bool> {
+        if let ChunkType::Inline = self.ensure_chunk(true, false, buffer.len())? {
+            self.decoder.read_exact(buffer)?;
+            self.inline_bytes -= buffer.len();
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
-    Ok(())
-}
+    fn discard_padding(&mut self, size: usize) -> Result<()> {
+        let mut buf = [0u8; 512];
+        assert!(size <= 512);
+        self.ensure_chunk(false, false, size)?;
+        self.decoder.read_exact(&mut buf[0..size])?;
+        self.inline_bytes -= size;
+        Ok(())
+    }
 
-pub fn splitstream_objects<R: Read, F: FnMut(Sha256HashValue)>(
-    split_stream: &mut R, mut callback: F
-) -> Result<()> {
-    while let Some(data) = read_splitstream_chunk(split_stream)? {
-        match data {
-            SplitStreamData::Inline(_) => { /* no op */ },
-            SplitStreamData::External(id) => callback(id)
+    pub fn read_exact(&mut self, actual_size: usize, stored_size: usize) -> Result<SplitStreamData> {
+        if let ChunkType::External(id) = self.ensure_chunk(false, true, stored_size)? {
+            // ...and the padding
+            if actual_size < stored_size {
+                self.discard_padding(stored_size - actual_size)?;
+            }
+            Ok(SplitStreamData::External(id))
+        } else {
+            let mut content = vec![];
+            read_into_vec(&mut self.decoder, &mut content, stored_size)?;
+            content.truncate(actual_size);
+            self.inline_bytes -= stored_size;
+            Ok(SplitStreamData::Inline(content))
         }
     }
 
-    Ok(())
+    pub fn cat(&mut self, output: &mut impl Write, mut load_data: impl FnMut(&Sha256HashValue) -> Result<Vec<u8>>) -> Result<()> {
+        let mut buffer = vec![];
+
+        loop {
+            match self.ensure_chunk(true, true, 0)? {
+                ChunkType::Eof => break Ok(()),
+                ChunkType::Inline => {
+                    read_into_vec(&mut self.decoder, &mut buffer, self.inline_bytes)?;
+                    self.inline_bytes = 0;
+                    output.write_all(&buffer)?;
+                },
+                ChunkType::External(ref id) => {
+                    output.write_all(&load_data(id)?)?;
+                }
+            }
+        }
+    }
+
+    pub fn get_object_refs(&mut self, mut callback: impl FnMut(&Sha256HashValue)) -> Result<()> {
+        let mut buffer = vec![];
+
+        for entry in &self.refs.map {
+            callback(&entry.verity);
+        }
+
+        loop {
+            match self.ensure_chunk(true, true, 0)? {
+                ChunkType::Eof => break Ok(()),
+                ChunkType::Inline => {
+                    read_into_vec(&mut self.decoder, &mut buffer, self.inline_bytes)?;
+                    self.inline_bytes = 0;
+                },
+                ChunkType::External(ref id) => {
+                    callback(id);
+                }
+            }
+        }
+    }
 }

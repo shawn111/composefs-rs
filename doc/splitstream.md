@@ -22,9 +22,44 @@ extremely well.
 
 ## File format
 
-The file format consists of a number of data blocks.
+The file format consists of a header, plus a number of data blocks.
 
-Each block starts with a u64 le "size" field followed by some amount of data.
+### Mappings
+
+The file starts with a single u64 le integer which is the number of mapping
+structures present in the file.  A mapping is a relationship between a file
+identified by its sha256 content hash and the fsverity hash of that same file.
+These entries are encoded simply as the sha256 hash value (32 bytes) plus the
+fsverity hash value (32 bytes) combined together into a single 64 byte record.
+
+For example, if we had a file that mapped `1234..` to `abcd..` and `5678..` to
+`efab..`, the header would look like:
+
+```
+     64bit    32 bytes   32 bytes + 32 bytes + 32 bytes
+   +--------+----------+----------+----------+---------+
+   | 2      | 1234     | abcd     | 5678     | efab    |
+   +--------+----------+----------+----------+---------+
+```
+
+The mappings in the header are always sorted by their sha256 content hash
+values.
+
+The mappings serve two purposes:
+
+ - in the case of splitstreams which refer to other splitstreams without
+   directly embedding the content of the other stream, this provides a
+   mechanism to find out which other streams are referenced.  This is used for
+   garbage collection.
+
+ - for the same usecase, it provides a mechanism to be able to verify the
+   content of the referred splitstream (by checking its fsverity digest) before
+   starting to iterate it
+
+### Data blocks
+
+After the header comes a number of data blocks.  Each block starts with a u64
+le "size" field followed by some amount of data.
 
 ```
      64bit    variable-sized
