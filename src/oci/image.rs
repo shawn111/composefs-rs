@@ -66,7 +66,7 @@ pub fn compose_filesystem(repo: &Repository, layers: &[String]) -> Result<FileSy
     let mut filesystem = FileSystem::new();
 
     for layer in layers {
-        let mut split_stream = repo.open_stream(layer)?;
+        let mut split_stream = repo.open_stream(layer, None)?;
         while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
            process_entry(&mut filesystem, entry)?;
         }
@@ -86,7 +86,7 @@ pub fn create_image(repo: &Repository, name: &str, layers: &Vec<String>) -> Resu
     let mut filesystem = FileSystem::new();
 
     for layer in layers {
-        let mut split_stream = repo.open_stream(layer)?;
+        let mut split_stream = repo.open_stream(layer, None)?;
         while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
            process_entry(&mut filesystem, entry)?;
         }

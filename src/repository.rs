@@ -19,6 +19,7 @@ use anyhow::{
     Context,
     Result,
     bail,
+    ensure,
 };
 use rustix::{
     fs::{
@@ -61,7 +62,10 @@ use crate::{
         SplitStreamWriter,
         SplitStreamReader,
     },
-    util::proc_self_fd,
+    util::{
+        parse_sha256,
+        proc_self_fd,
+    },
 };
 
 pub struct Repository {
@@ -104,14 +108,6 @@ impl Repository {
             .or_else(|e| match e { Errno::EXIST => Ok(()), _ => Err(e) })
     }
 
-    pub fn exists(&self, name: &str) -> Result<bool> {
-        match accessat(&self.repository, name, Access::READ_OK, AtFlags::empty()) {
-            Ok(()) => Ok(true),
-            Err(ref e) if e.kind() == ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e)?
-        }
-    }
-
     pub fn ensure_object(&self, data: &[u8]) -> Result<Sha256HashValue> {
         let digest = FsVerityHasher::hash(data);
         let dir = PathBuf::from(format!("objects/{:02x}", digest[0]));
@@ -149,33 +145,13 @@ impl Repository {
         Ok(digest)
     }
 
-    pub fn open_with_verity(&self, filename: &str, expected_verity: Sha256HashValue) -> Result<OwnedFd> {
+    fn open_with_verity(&self, filename: &str, expected_verity: &Sha256HashValue) -> Result<OwnedFd> {
         let fd = self.openat(filename, OFlags::RDONLY)?;
         let measured_verity: Sha256HashValue = fs_ioc_measure_verity(&fd)?;
-        if measured_verity != expected_verity {
+        if measured_verity != *expected_verity {
             bail!("bad verity!")
         } else {
             Ok(fd)
-        }
-    }
-
-    /// Performs a lookup of a by-sha256 reference in the given category
-    /// If such a reference exists, this returns the underlying object ID.
-    pub fn find_by_sha256(&self, category: &str, sha256: Sha256HashValue) -> Result<Option<Sha256HashValue>> {
-        let filename = format!("{}/by-sha256/{}", category, hex::encode(sha256));
-        match readlinkat(&self.repository, &filename, []) {
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e)?,
-            Ok(linkpath) => {
-                let mut hash = Sha256HashValue::EMPTY;
-                let linkbytes = linkpath.to_bytes();
-                if linkbytes.len() != 67 || &linkbytes[0..3] != b"../" {
-                    bail!("Incorrectly formatted symlink {:?}/{:?}", self.path, filename);
-                }
-                hex::decode_to_slice(&linkpath.to_bytes()[3..], &mut hash).
-                    with_context(|| format!("Incorrectly formatted symlink {:?}/{:?}", self.path, filename))?;
-                Ok(Some(hash))
-            }
         }
     }
 
@@ -186,89 +162,102 @@ impl Repository {
         SplitStreamWriter::new(self, None, sha256)
     }
 
-    /// Consumes the SplitStreamWriter, stores the splitstream in the object store (if it's not
-    /// already present), and links the named reference to it.
-    ///
-    ///
-    ///
-    /// This is an error if the reference already exists.
-    ///
-    /// In any case, the object ID (by fs-verity digest) is returned.
-    pub fn store_stream(&self, writer: SplitStreamWriter, name: &str) -> Result<Sha256HashValue> {
-        let object_id = writer.done()?;
+    fn parse_object_path(path: impl AsRef<[u8]>) -> Result<Sha256HashValue> {
+        // "objects/0c/9513d99b120ee9a709c4d6554d938f6b2b7e213cf5b26f2e255c0b77e40379"
+        let bytes = path.as_ref();
+        ensure!(bytes.len() == 73, "stream symlink has incorrect length");
+        ensure!(bytes.starts_with(b"objects/"), "stream symlink has incorrect prefix");
+        ensure!(bytes[10] == b'/', "stream symlink has incorrect path separator");
+        let mut result = Sha256HashValue::EMPTY;
+        hex::decode_to_slice(&bytes[8..10], &mut result[..1])
+            .context("stream symlink has incorrect format")?;
+        hex::decode_to_slice(&bytes[11..], &mut result[1..])
+            .context("stream symlink has incorrect format")?;
+        Ok(result)
+    }
 
-        let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
-        let stream_path = format!("streams/{}", hex::encode(object_id));
-        let reference_path = format!("streams/refs/{name}");
+    fn format_object_path(id: &Sha256HashValue) -> String {
+        format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..]))
+    }
 
-        self.ensure_symlink(&stream_path, &object_path)?;
-        self.symlink(&reference_path, &stream_path)?;
+    /// Ensures that the stream with a given SHA256 digest exists in the repository.
+    ///
+    /// This tries to find the stream by the `sha256` digest of its contents.  If the stream is
+    /// already in the repository, the object ID (fs-verity digest) is read from the symlink.  If
+    /// the stream is not already in the repository, a `SplitStreamWriter` is created and passed to
+    /// `callback`.  On return, the object ID of the stream will be calculated and it will be
+    /// written to disk (if it wasn't already created by someone else in the meantime).
+    ///
+    /// In both cases, if `reference` is provided, it is used to provide a fixed name for the
+    /// object.  Any object that doesn't have a fixed reference to it is subject to garbage
+    /// collection.  It is an error if this reference already exists.
+    ///
+    /// On success, the object ID of the new object is returned.  It is expected that this object
+    /// ID will be used when referring to the stream from other linked streams.
+    pub fn ensure_stream(
+        &self,
+        sha256: &Sha256HashValue,
+        callback: impl FnOnce(&mut SplitStreamWriter) -> Result<()>,
+        reference: Option<&str>,
+    ) -> Result<Sha256HashValue> {
+        let stream_path = format!("streams/{}", hex::encode(sha256));
+
+        let object_id = match readlinkat(&self.repository, &stream_path, []) {
+            Ok(target) => {
+                // NB: This is kinda unsafe: we depend that the symlink didn't get corrupted
+                // we could also measure the verity of the destination object, but it doesn't
+                // improve anything, since we don't know if it was the original one.
+                let bytes = target.as_bytes();
+                ensure!(bytes.starts_with(b"../"), "stream symlink has incorrect prefix");
+                Repository::parse_object_path(&bytes[3..])?
+            },
+            Err(Errno::NOENT) => {
+                let mut writer = self.create_stream(Some(*sha256));
+                callback(&mut writer)?;
+                let object_id = writer.done()?;
+
+                let object_path = Repository::format_object_path(&object_id);
+                self.ensure_symlink(&stream_path, &object_path)?;
+                object_id
+            },
+            Err(err) => Err(err)?,
+        };
+
+        if let Some(name) = reference {
+            let reference_path = format!("streams/refs/{name}");
+            self.symlink(&reference_path, &stream_path)?;
+        }
+
         Ok(object_id)
     }
 
-    /// A convenience function to check if a stream with the given SHA256 digest already exists.
-    ///
-    /// If such a stream exists, then this function simply creates a new named reference to the
-    /// stream and returns the underlying object ID.
-    ///
-    /// If not, the user's callback is called with a SplitStreamWriter which should be populated
-    /// with the data for the stream.  After the callback returns, we write the stream to disk and
-    /// link the named reference to it, returning the underlying object ID.
-    ///
-    /// It is an error if the named reference already exists.
-    pub fn store_stream_by_sha256<F: FnOnce(&mut SplitStreamWriter) -> Result<()>>(
-        &self, name: &str, sha256: Sha256HashValue, callback: F,
-    ) -> Result<()> {
-        let by_sha256_path = format!("streams/by-sha256/{}", hex::encode(sha256));
+    pub fn open_stream(&self, name: &str, verity: Option<&Sha256HashValue>) -> Result<SplitStreamReader<File>> {
+        let filename = format!("streams/{}", name);
 
-        if !self.exists(&by_sha256_path)? {
-            let mut writer = self.create_stream(Some(sha256));
-            callback(&mut writer)?;
-            let object_id = writer.done()?;
+        let file = File::from(
+            if let Some(verity_hash) = verity {
+                self.open_with_verity(&filename, &verity_hash)?
+            } else {
+                self.openat(&filename, OFlags::RDONLY)?
+            }
+        );
 
-            let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
-            let stream_path = format!("streams/{}", hex::encode(object_id));
-            self.ensure_symlink(&stream_path, &object_path)?;
-            self.ensure_symlink(&by_sha256_path, &stream_path)?;
-        }
-
-        let reference_path = format!("streams/refs/{name}");
-        self.symlink(&reference_path, &by_sha256_path)?;
-        Ok(())
-    }
-
-    /// category is like "streams" or "images"
-    /// name is like "refs/1000/user/xyz" (with '/') or a sha256 hex hash value (without '/')
-    fn open_in_category(&self, category: &str, name: &str) -> Result<OwnedFd> {
-        let filename = format!("{}/{}", category, name);
-
-        if name.contains("/") {
-            // no fsverity checking on this path
-            self.openat(&filename, OFlags::RDONLY)
-        } else {
-            // this must surely be a hash value, and we want to verify it
-            let mut hash = Sha256HashValue::EMPTY;
-            hex::decode_to_slice(name, &mut hash)?;
-            self.open_with_verity(&filename, hash)
-        }
-    }
-
-    pub fn open_stream(&self, name: &str) -> Result<SplitStreamReader<File>> {
-        let file = File::from(self.open_in_category("streams", name)?);
         SplitStreamReader::new(file)
     }
 
-    fn open_object(&self, id: Sha256HashValue) -> Result<OwnedFd> {
+    fn open_object(&self, id: &Sha256HashValue) -> Result<OwnedFd> {
         self.open_with_verity(&format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..])), id)
     }
 
-    pub fn merge_splitstream<W: Write>(&self, name: &str, stream: &mut W) -> Result<()> {
-        let mut split_stream = self.open_stream(name)?;
+    pub fn merge_splitstream(
+        &self, name: &str, verity: Option<&Sha256HashValue>, stream: &mut impl Write
+    ) -> Result<()> {
+        let mut split_stream = self.open_stream(name, verity)?;
         split_stream.cat(
             stream,
             |id| -> Result<Vec<u8>> {
                 let mut data = vec![];
-                File::from(self.open_object(*id)?).read_to_end(&mut data)?;
+                File::from(self.open_object(id)?).read_to_end(&mut data)?;
                 Ok(data)
             }
         )?;
@@ -290,7 +279,15 @@ impl Repository {
     }
 
     pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
-        let image = self.open_in_category("images", name)?;
+        let filename = format!("images/{}", name);
+
+        let image = if name.contains("/") {
+            // no fsverity checking on this path
+            self.openat(&filename, OFlags::RDONLY)
+        } else {
+            self.open_with_verity(&filename, &parse_sha256(name)?)
+        }?;
+
         let object_path = self.path.join("objects");
         mount_fd(image, &object_path, mountpoint)
     }
@@ -426,9 +423,9 @@ impl Repository {
 
         let mut objects = HashSet::new();
 
-        for object in self.gc_category("images")? {
+        for ref object in self.gc_category("images")? {
             println!("{} lives as an image", hex::encode(object));
-            objects.insert(object);
+            objects.insert(*object);
 
             // composefs-info mmaps the file, so pipes aren't normally OK but we pass the
             // underlying file directly, which works.
@@ -458,7 +455,7 @@ impl Repository {
             println!("{} lives as a stream", hex::encode(object));
             objects.insert(object);
 
-            let mut split_stream = self.open_stream(&hex::encode(object))?;
+            let mut split_stream = self.open_stream(&hex::encode(object), None)?;
             split_stream.get_object_refs(
                 |id| {
                     println!("   with {}", hex::encode(*id));

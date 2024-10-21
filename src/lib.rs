@@ -1,4 +1,4 @@
-mod util;
+pub mod util;
 pub mod dumpfile;
 pub mod fsverity;
 pub mod image;

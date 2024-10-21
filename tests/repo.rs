@@ -8,6 +8,10 @@ use anyhow::{
     Context,
     Result,
 };
+use sha2::{
+    Digest,
+    Sha256,
+};
 
 use composefs_experiments::{
     oci,
@@ -47,13 +51,17 @@ fn home_var_tmp() -> Result<PathBuf> {
 #[test]
 fn test_layer() -> Result<()> {
     let layer = example_layer()?;
+    let mut context = Sha256::new();
+    context.update(&layer);
+    let layer_id: [u8; 32] = context.finalize().into();
+
 
     let tmpfile = tempfile::TempDir::with_prefix_in("composefs-test-", home_var_tmp()?)?;
     let repo = Repository::open_path(tmpfile.path().to_path_buf())?;
-    oci::import_layer(&repo, "name", &mut layer.as_slice())?;
+    let id = oci::import_layer(&repo, &layer_id, Some("name"), &mut layer.as_slice())?;
 
     let mut dump = String::new();
-    let mut split_stream = repo.open_stream("refs/name")?;
+    let mut split_stream = repo.open_stream("refs/name", Some(&id))?;
     while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
         writeln!(dump, "{}", entry)?;
     }

@@ -76,7 +76,7 @@ pub struct SplitStreamWriter<'a> {
 impl<'a> SplitStreamWriter<'a> {
     pub fn new(repo: &Repository, refs: Option<DigestMap>, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
         // SAFETY: we surely can't get an error writing the header to a Vec<u8>
-        let mut writer = zstd::stream::write::Encoder::new(vec![], 0).unwrap();
+        let mut writer = Encoder::new(vec![], 0).unwrap();
 
         match refs {
             Some(DigestMap { map }) => {
@@ -318,6 +318,12 @@ impl<R: Read> SplitStreamReader<R> {
                     callback(id);
                 }
             }
+        }
+    }
+
+    pub fn get_stream_refs(&mut self, mut callback: impl FnMut(&Sha256HashValue)) {
+        for entry in &self.refs.map {
+            callback(&entry.body);
         }
     }
 }
