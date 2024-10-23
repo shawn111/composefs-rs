@@ -10,6 +10,10 @@ use anyhow::{
     Context,
     Result,
 };
+use tokio::io::{
+    AsyncRead,
+    AsyncReadExt,
+};
 
 use crate::fsverity::{
     FsVerityHashValue,
@@ -27,6 +31,31 @@ pub fn read_exactish<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<bool> {
 
     while !todo.is_empty() {
         match reader.read(todo) {
+            Ok(0) => match todo.len() {
+                s if s == buflen => return Ok(false),  // clean EOF
+                _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?
+            },
+            Ok(n) => {
+                todo = &mut todo[n..];
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(e) => {
+                Err(e)?;
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+pub async fn read_exactish_async(reader: &mut (impl AsyncRead + Unpin), buf: &mut [u8]) -> Result<bool> {
+    let buflen = buf.len();
+    let mut todo: &mut [u8] = buf;
+
+    while !todo.is_empty() {
+        match reader.read(todo).await {
             Ok(0) => match todo.len() {
                 s if s == buflen => return Ok(false),  // clean EOF
                 _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?

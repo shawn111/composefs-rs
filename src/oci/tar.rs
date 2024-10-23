@@ -22,6 +22,10 @@ use tar::{
     Header,
     PaxExtensions,
 };
+use tokio::io::{
+    AsyncRead,
+    AsyncReadExt,
+};
 
 use crate::{
     dumpfile,
@@ -34,7 +38,10 @@ use crate::{
         SplitStreamReader,
         SplitStreamWriter,
     },
-    util::read_exactish,
+    util::{
+        read_exactish,
+        read_exactish_async,
+    },
 };
 
 fn read_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
@@ -44,7 +51,16 @@ fn read_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
     } else {
         Ok(None)
     }
- }
+}
+
+async fn read_header_async(reader: &mut (impl AsyncRead + Unpin)) -> Result<Option<Header>> {
+    let mut header = Header::new_gnu();
+    if read_exactish_async(reader, header.as_mut_bytes()).await? {
+        Ok(Some(header))
+    } else {
+        Ok(None)
+    }
+}
 
 /// Splits the tar file from tar_stream into a Split Stream.  The store_data function is
 /// responsible for ensuring that "external data" is in the composefs repository and returns the
@@ -66,6 +82,35 @@ pub fn split<R: Read>(
         let storage_size = (actual_size + 511) & !511;
         let mut buffer = vec![0u8; storage_size];
         tar_stream.read_exact(&mut buffer)?;
+
+        if header.entry_type() == EntryType::Regular && storage_size > 0 {
+            // non-empty regular file: store the data in the object store
+            let padding = buffer.split_off(actual_size);
+            writer.write_external(&buffer, padding)?;
+        } else {
+            // else: store the data inline in the split stream
+            writer.write_inline(&buffer);
+        }
+    }
+    Ok(())
+}
+
+pub async fn split_async(
+    mut tar_stream: impl AsyncRead + Unpin, writer: &mut SplitStreamWriter<'_>
+) -> Result<()> {
+    while let Some(header) = read_header_async(&mut tar_stream).await? {
+        // the header always gets stored as inline data
+        writer.write_inline(header.as_bytes());
+
+        if header.as_bytes() == &[0u8; 512] {
+            continue;
+        }
+
+        // read the corresponding data, if there is any
+        let actual_size = header.entry_size()? as usize;
+        let storage_size = (actual_size + 511) & !511;
+        let mut buffer = vec![0u8; storage_size];
+        tar_stream.read_exact(&mut buffer).await?;
 
         if header.entry_type() == EntryType::Regular && storage_size > 0 {
             // non-empty regular file: store the data in the object store

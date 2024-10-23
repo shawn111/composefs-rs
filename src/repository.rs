@@ -59,6 +59,7 @@ use crate::{
     },
     mount::mount_fd,
     splitstream::{
+        DigestMap,
         SplitStreamWriter,
         SplitStreamReader,
     },
@@ -158,8 +159,8 @@ impl Repository {
     /// Creates a SplitStreamWriter for writing a split stream.
     /// You should write the data to the returned object and then pass it to .store_stream() to
     /// store the result.
-    pub fn create_stream(&self, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
-        SplitStreamWriter::new(self, None, sha256)
+    pub fn create_stream(&self, sha256: Option<Sha256HashValue>, maps: Option<DigestMap>) -> SplitStreamWriter {
+        SplitStreamWriter::new(self, maps, sha256)
     }
 
     fn parse_object_path(path: impl AsRef<[u8]>) -> Result<Sha256HashValue> {
@@ -178,6 +179,36 @@ impl Repository {
 
     fn format_object_path(id: &Sha256HashValue) -> String {
         format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..]))
+    }
+
+    pub fn has_stream(&self, sha256: &Sha256HashValue) -> Result<Option<Sha256HashValue>> {
+        let stream_path = format!("streams/{}", hex::encode(sha256));
+
+        match readlinkat(&self.repository, &stream_path, []) {
+            Ok(target) => {
+                // NB: This is kinda unsafe: we depend that the symlink didn't get corrupted
+                // we could also measure the verity of the destination object, but it doesn't
+                // improve anything, since we don't know if it was the original one.
+                let bytes = target.as_bytes();
+                ensure!(bytes.starts_with(b"../"), "stream symlink has incorrect prefix");
+                Ok(Some(Repository::parse_object_path(&bytes[3..])?))
+            },
+            Err(Errno::NOENT) => {
+                Ok(None)
+            },
+            Err(err) => Err(err)?,
+        }
+    }
+
+    pub fn write_stream(&self, writer: SplitStreamWriter) -> Result<Sha256HashValue> {
+        let Some((.., ref sha256)) = writer.sha256 else {
+            bail!("Writer doesn't have sha256 enabled");
+        };
+        let stream_path = format!("streams/{}", hex::encode(sha256));
+        let object_id = writer.done()?;
+        let object_path = Repository::format_object_path(&object_id);
+        self.ensure_symlink(&stream_path, &object_path)?;
+        Ok(object_id)
     }
 
     /// Ensures that the stream with a given SHA256 digest exists in the repository.
@@ -202,17 +233,10 @@ impl Repository {
     ) -> Result<Sha256HashValue> {
         let stream_path = format!("streams/{}", hex::encode(sha256));
 
-        let object_id = match readlinkat(&self.repository, &stream_path, []) {
-            Ok(target) => {
-                // NB: This is kinda unsafe: we depend that the symlink didn't get corrupted
-                // we could also measure the verity of the destination object, but it doesn't
-                // improve anything, since we don't know if it was the original one.
-                let bytes = target.as_bytes();
-                ensure!(bytes.starts_with(b"../"), "stream symlink has incorrect prefix");
-                Repository::parse_object_path(&bytes[3..])?
-            },
-            Err(Errno::NOENT) => {
-                let mut writer = self.create_stream(Some(*sha256));
+        let object_id = match self.has_stream(sha256)? {
+            Some(id) => id,
+            None => {
+                let mut writer = self.create_stream(Some(*sha256), None);
                 callback(&mut writer)?;
                 let object_id = writer.done()?;
 
@@ -220,7 +244,6 @@ impl Repository {
                 self.ensure_symlink(&stream_path, &object_path)?;
                 object_id
             },
-            Err(err) => Err(err)?,
         };
 
         if let Some(name) = reference {
@@ -236,7 +259,7 @@ impl Repository {
 
         let file = File::from(
             if let Some(verity_hash) = verity {
-                self.open_with_verity(&filename, &verity_hash)?
+                self.open_with_verity(&filename, verity_hash)?
             } else {
                 self.openat(&filename, OFlags::RDONLY)?
             }

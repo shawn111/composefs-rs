@@ -39,6 +39,10 @@ enum OciCommand {
     CreateDumpfile {
         layers: Vec<String>,
     },
+    Pull {
+        image: String,
+        name: Option<String>,
+    },
     CreateImage {
         name: String,
         layers: Vec<String>,
@@ -121,6 +125,14 @@ fn main() -> Result<()> {
                 let image_id = oci::image::create_image(&repo, &name, &layers)?;
                 println!("{}", hex::encode(image_id));
             },
+            OciCommand::Pull { ref image, name } => {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to build tokio runtime");
+                // And invoke the async_main
+                runtime.block_on(async move { oci::pull(&repo, image, name.as_deref()).await })?;
+            }
         }
         Command::Mount { name, mountpoint } => {
             repo.mount(&name, &mountpoint)?;

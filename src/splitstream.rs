@@ -58,10 +58,10 @@ impl DigestMap {
         }
     }
 
-    pub fn insert(&mut self, entry: DigestMapEntry) {
-        match self.map.binary_search_by_key(&entry.body, |e| e.body) {
-            Ok(idx) => self.map[idx] = entry,
-            Err(idx) => self.map.insert(idx, entry),
+    pub fn insert(&mut self, body: &Sha256HashValue, verity: &Sha256HashValue) {
+        match self.map.binary_search_by_key(body, |e| e.body) {
+            Ok(idx) => assert_eq!(self.map[idx].verity, *verity),  // or else, bad things...
+            Err(idx) => self.map.insert(idx, DigestMapEntry { body: *body, verity: *verity }),
         }
     }
 }
@@ -70,7 +70,7 @@ pub struct SplitStreamWriter<'a> {
     repo: &'a Repository,
     inline_content: Vec<u8>,
     writer: Encoder<'a, Vec<u8>>,
-    sha256: Option<(Sha256, Sha256HashValue)>,
+    pub sha256: Option<(Sha256, Sha256HashValue)>,
 }
 
 impl<'a> SplitStreamWriter<'a> {
