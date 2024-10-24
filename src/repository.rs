@@ -289,16 +289,27 @@ impl Repository {
     }
 
     /// this function is not safe for untrusted users
-    pub fn write_image(&self, name: &str, data: &[u8]) -> Result<Sha256HashValue> {
+    pub fn write_image(&self, name: Option<&str>, data: &[u8]) -> Result<Sha256HashValue> {
         let object_id = self.ensure_object(data)?;
-        self.link_ref(name, "images", object_id)
+
+        let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
+        let image_path = format!("images/{}", hex::encode(object_id));
+
+        self.ensure_symlink(&image_path, &object_path)?;
+
+        if let Some(reference) = name {
+            let ref_path = format!("images/refs/{}", reference);
+            self.symlink(&ref_path, &image_path)?;
+        }
+
+        Ok(object_id)
     }
 
     /// this function is not safe for untrusted users
     pub fn import_image<R: Read>(&self, name: &str, image: &mut R) -> Result<Sha256HashValue> {
         let mut data = vec![];
         image.read_to_end(&mut data)?;
-        self.write_image(name, &data)
+        self.write_image(Some(name), &data)
     }
 
     pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
@@ -313,18 +324,6 @@ impl Repository {
 
         let object_path = self.path.join("objects");
         mount_fd(image, &object_path, mountpoint)
-    }
-
-    pub fn link_ref(
-        &self, name: &str, category: &str, object_id: Sha256HashValue
-    ) -> Result<Sha256HashValue> {
-        let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
-        let category_path = format!("{}/{}", category, hex::encode(object_id));
-        let ref_path = format!("{}/refs/{}", category, name);
-
-        self.ensure_symlink(&category_path, &object_path)?;
-        self.symlink(&ref_path, &category_path)?;
-        Ok(object_id)
     }
 
     pub fn symlink(&self, name: impl AsRef<Path>, target: impl AsRef<Path>) -> ErrnoResult<()> {

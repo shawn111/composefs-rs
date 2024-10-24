@@ -82,7 +82,9 @@ pub fn create_dumpfile(repo: &Repository, layers: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub fn create_image(repo: &Repository, name: &str, layers: &Vec<String>) -> Result<Sha256HashValue> {
+pub fn create_image_from_layers(
+    repo: &Repository, name: Option<&str>, layers: &Vec<String>
+) -> Result<Sha256HashValue> {
     let mut filesystem = FileSystem::new();
 
     for layer in layers {
@@ -112,6 +114,22 @@ pub fn create_image(repo: &Repository, name: &str, layers: &Vec<String>) -> Resu
     };
 
     repo.write_image(name, &image)
+}
+
+use oci_spec::image::ImageConfiguration;
+
+pub fn create_image(repo: &Repository, config: &str, name: Option<&str>) -> Result<Sha256HashValue> {
+    let mut raw_config = vec![];
+    repo.merge_splitstream(config, None, &mut raw_config)?;
+    let config = ImageConfiguration::from_reader(raw_config.as_slice())?;
+    let mut layers = vec![];
+    for diffid in config.rootfs().diff_ids() {
+        layers.push(match diffid.strip_prefix("sha256:") {
+            Some(rest) => rest.to_string(),
+            None => bail!("Invalid diffid {diffid}")
+        });
+    }
+    create_image_from_layers(repo, name, &layers)
 }
 
 #[cfg(test)]

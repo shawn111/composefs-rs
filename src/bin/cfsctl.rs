@@ -44,8 +44,8 @@ enum OciCommand {
         name: Option<String>,
     },
     CreateImage {
-        name: String,
-        layers: Vec<String>,
+        config: String,
+        name: Option<String>,
     },
 }
 
@@ -121,8 +121,8 @@ fn main() -> Result<()> {
             OciCommand::CreateDumpfile { layers } => {
                 oci::image::create_dumpfile(&repo, &layers)?;
             },
-            OciCommand::CreateImage { name, layers } => {
-                let image_id = oci::image::create_image(&repo, &name, &layers)?;
+            OciCommand::CreateImage { config, name } => {
+                let image_id = oci::image::create_image(&repo, &config, name.as_deref())?;
                 println!("{}", hex::encode(image_id));
             },
             OciCommand::Pull { ref image, name } => {

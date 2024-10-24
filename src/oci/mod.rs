@@ -156,6 +156,8 @@ impl<'repo> ImageOp<'repo> {
             let config_descriptor = manifest.config();
             let layers = manifest.layers();
             let (config_sha256, config_id) = self.ensure_config(layers, config_descriptor).await?;
+            println!("config sha256 {}", hex::encode(config_sha256));
+            println!("config verity {}", hex::encode(config_id));
 
             let mut manifest_maps = DigestMap::new();
             manifest_maps.insert(&config_sha256, &config_id);
@@ -176,7 +178,7 @@ pub async fn pull(
 ) -> Result<()> {
     let op = ImageOp::new(repo, imgref).await?;
     let (sha256, id) = op.ensure_manifest().await?;
-    println!("sha256 {}", hex::encode(sha256));
-    println!("id {}", hex::encode(id));
+    println!("manifest sha256 {}", hex::encode(sha256));
+    println!("manifest verity {}", hex::encode(id));
     Ok(())
 }
