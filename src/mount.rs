@@ -25,7 +25,7 @@ impl FsHandle {
 
 impl AsFd for FsHandle {
     fn as_fd(&self) -> BorrowedFd {
-        return self.fd.as_fd();
+        self.fd.as_fd()
     }
 }
 

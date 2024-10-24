@@ -63,7 +63,7 @@ pub struct SplitStreamWriter<'a> {
     pub sha256: Option<(Sha256, Sha256HashValue)>,
 }
 
-impl<'a> SplitStreamWriter<'a> {
+impl SplitStreamWriter<'_> {
     pub fn new(
         repo: &Repository,
         refs: Option<DigestMap>,
