@@ -1,22 +1,9 @@
-use std::{
-    fs::create_dir_all,
-    path::PathBuf,
-    fmt::Write,
-};
+use std::{fmt::Write, fs::create_dir_all, path::PathBuf};
 
-use anyhow::{
-    Context,
-    Result,
-};
-use sha2::{
-    Digest,
-    Sha256,
-};
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 
-use composefs_experiments::{
-    oci,
-    repository::Repository,
-};
+use composefs_experiments::{oci, repository::Repository};
 
 fn append_data(builder: &mut tar::Builder<Vec<u8>>, name: &str, size: usize) -> Result<()> {
     let mut header = tar::Header::new_ustar();
@@ -41,8 +28,7 @@ fn home_var_tmp() -> Result<PathBuf> {
     // We can't use /tmp because that's usually a tmpfs (no fsverity)
     // We also can't use /var/tmp because it's an overlayfs in toolbox (no fsverity)
     // So let's try something in the user's homedir?
-    let home = std::env::var("HOME")
-        .with_context(|| "$HOME must be set when in user mode")?;
+    let home = std::env::var("HOME").with_context(|| "$HOME must be set when in user mode")?;
     let tmp = PathBuf::from(home).join(".var/tmp");
     create_dir_all(&tmp)?;
     Ok(tmp)
@@ -54,7 +40,6 @@ fn test_layer() -> Result<()> {
     let mut context = Sha256::new();
     context.update(&layer);
     let layer_id: [u8; 32] = context.finalize().into();
-
 
     let tmpfile = tempfile::TempDir::with_prefix_in("composefs-test-", home_var_tmp()?)?;
     let repo = Repository::open_path(tmpfile.path().to_path_buf())?;

@@ -1,19 +1,10 @@
 use std::{
     collections::HashMap,
-    ffi::{
-        OsStr,
-        OsString,
-    },
+    ffi::{OsStr, OsString},
     fmt,
-    io::{
-        BufWriter,
-        Write,
-    },
+    io::{BufWriter, Write},
     os::unix::ffi::OsStrExt,
-    path::{
-        PathBuf,
-        Path,
-    },
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -22,15 +13,7 @@ use rustix::fs::FileType;
 
 use crate::{
     fsverity::Sha256HashValue,
-    image::{
-        DirEnt,
-        Directory,
-        FileSystem,
-        Inode,
-        Leaf,
-        LeafContent,
-        Stat,
-    },
+    image::{DirEnt, Directory, FileSystem, Inode, Leaf, LeafContent, Stat},
 };
 
 fn write_empty(writer: &mut impl fmt::Write) -> fmt::Result {
@@ -66,7 +49,7 @@ fn write_entry(
     rdev: u64,
     payload: impl AsRef<OsStr>,
     content: &[u8],
-    digest: Option<&Sha256HashValue>
+    digest: Option<&Sha256HashValue>,
 ) -> fmt::Result {
     let mode = stat.st_mode | ifmt.as_raw_mode();
     let uid = stat.st_uid;
@@ -74,7 +57,10 @@ fn write_entry(
     let mtim_sec = stat.st_mtim_sec;
 
     write_escaped(writer, path.as_os_str().as_bytes())?;
-    write!(writer, " {size} {mode:o} {nlink} {uid} {gid} {rdev} {mtim_sec}.0 ")?;
+    write!(
+        writer,
+        " {size} {mode:o} {nlink} {uid} {gid} {rdev} {mtim_sec}.0 "
+    )?;
     write_escaped(writer, payload.as_ref().as_bytes())?;
     write!(writer, " ")?;
     write_escaped(writer, content)?;
@@ -95,33 +81,117 @@ fn write_entry(
     Ok(())
 }
 
-pub fn write_directory(writer: &mut impl fmt::Write, path: &Path, stat: &Stat, nlink: usize) -> fmt::Result {
-    write_entry(writer, path, stat, FileType::Directory, 0, nlink, 0, "", &[], None)
+pub fn write_directory(
+    writer: &mut impl fmt::Write,
+    path: &Path,
+    stat: &Stat,
+    nlink: usize,
+) -> fmt::Result {
+    write_entry(
+        writer,
+        path,
+        stat,
+        FileType::Directory,
+        0,
+        nlink,
+        0,
+        "",
+        &[],
+        None,
+    )
 }
 
-pub fn write_leaf(writer: &mut impl fmt::Write, path: &Path, stat: &Stat, content: &LeafContent, nlink: usize) -> fmt::Result {
+pub fn write_leaf(
+    writer: &mut impl fmt::Write,
+    path: &Path,
+    stat: &Stat,
+    content: &LeafContent,
+    nlink: usize,
+) -> fmt::Result {
     match content {
         LeafContent::InlineFile(ref data) => write_entry(
-            writer, path, stat, FileType::RegularFile, data.len() as u64, nlink, 0, "", data, None
+            writer,
+            path,
+            stat,
+            FileType::RegularFile,
+            data.len() as u64,
+            nlink,
+            0,
+            "",
+            data,
+            None,
         ),
         LeafContent::ExternalFile(id, size) => write_entry(
-            writer, path, stat, FileType::RegularFile, *size, nlink, 0,
-            format!("{:02x}/{}", id[0], hex::encode(&id[1..])), &[], Some(id)
+            writer,
+            path,
+            stat,
+            FileType::RegularFile,
+            *size,
+            nlink,
+            0,
+            format!("{:02x}/{}", id[0], hex::encode(&id[1..])),
+            &[],
+            Some(id),
         ),
         LeafContent::BlockDevice(rdev) => write_entry(
-            writer, path, stat, FileType::BlockDevice, 0, nlink, *rdev, "", &[], None
+            writer,
+            path,
+            stat,
+            FileType::BlockDevice,
+            0,
+            nlink,
+            *rdev,
+            "",
+            &[],
+            None,
         ),
         LeafContent::CharacterDevice(rdev) => write_entry(
-            writer, path, stat, FileType::CharacterDevice, 0, nlink, *rdev, "", &[], None
+            writer,
+            path,
+            stat,
+            FileType::CharacterDevice,
+            0,
+            nlink,
+            *rdev,
+            "",
+            &[],
+            None,
         ),
         LeafContent::Fifo => write_entry(
-            writer, path, stat, FileType::Fifo, 0, nlink, 0, "", &[], None
+            writer,
+            path,
+            stat,
+            FileType::Fifo,
+            0,
+            nlink,
+            0,
+            "",
+            &[],
+            None,
         ),
         LeafContent::Socket => write_entry(
-            writer, path, stat, FileType::Socket, 0, nlink, 0, "", &[], None
+            writer,
+            path,
+            stat,
+            FileType::Socket,
+            0,
+            nlink,
+            0,
+            "",
+            &[],
+            None,
         ),
         LeafContent::Symlink(ref target) => write_entry(
-            writer, path, stat, FileType::Symlink, target.as_bytes().len() as u64, nlink, 0, target, &[], None
+            writer,
+            path,
+            stat,
+            FileType::Symlink,
+            target.as_bytes().len() as u64,
+            nlink,
+            0,
+            target,
+            &[],
+            None,
         ),
     }
 }
@@ -136,7 +206,7 @@ pub fn write_hardlink(writer: &mut impl fmt::Write, path: &Path, target: &OsStr)
 
 struct DumpfileWriter<'a, W: Write> {
     hardlinks: HashMap<*const Leaf, OsString>,
-    writer: &'a mut W
+    writer: &'a mut W,
 }
 
 fn writeln_fmt(writer: &mut impl Write, f: impl Fn(&mut String) -> fmt::Result) -> Result<()> {
@@ -147,20 +217,27 @@ fn writeln_fmt(writer: &mut impl Write, f: impl Fn(&mut String) -> fmt::Result) 
 
 impl<'a, W: Write> DumpfileWriter<'a, W> {
     fn new(writer: &'a mut W) -> Self {
-        Self { hardlinks: HashMap::new(), writer }
+        Self {
+            hardlinks: HashMap::new(),
+            writer,
+        }
     }
 
     fn write_dir(&mut self, path: &mut PathBuf, dir: &Directory) -> Result<()> {
         // nlink is 2 + number of subdirectories
         // this is also true for the root dir since '..' is another self-ref
-        let nlink = dir.entries.iter().fold(2, |count, ent| count + {
-            match ent.inode {
-                Inode::Directory(..) => 1,
-                _ => 0,
+        let nlink = dir.entries.iter().fold(2, |count, ent| {
+            count + {
+                match ent.inode {
+                    Inode::Directory(..) => 1,
+                    _ => 0,
+                }
             }
         });
 
-        writeln_fmt(self.writer, |fmt| write_directory(fmt, path, &dir.stat, nlink))?;
+        writeln_fmt(self.writer, |fmt| {
+            write_directory(fmt, path, &dir.stat, nlink)
+        })?;
 
         for DirEnt { name, inode } in dir.entries.iter() {
             path.push(name);
@@ -168,7 +245,7 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
             match inode {
                 Inode::Directory(ref dir) => {
                     self.write_dir(path, dir)?;
-                },
+                }
                 Inode::Leaf(ref leaf) => {
                     self.write_leaf(path, leaf)?;
                 }
@@ -193,7 +270,9 @@ impl<'a, W: Write> DumpfileWriter<'a, W> {
             self.hardlinks.insert(ptr, OsString::from(&path));
         }
 
-        writeln_fmt(self.writer, |fmt| write_leaf(fmt, path, &leaf.stat, &leaf.content, nlink))
+        writeln_fmt(self.writer, |fmt| {
+            write_leaf(fmt, path, &leaf.stat, &leaf.content, nlink)
+        })
     }
 }
 

@@ -1,6 +1,8 @@
-use super::Sha256HashValue;
-use sha2::{Sha256, Digest};
 use std::cmp::min;
+
+use sha2::{Digest, Sha256};
+
+use super::Sha256HashValue;
 
 // TODO: support Sha512
 
@@ -11,7 +13,10 @@ struct FsVerityLayer {
 
 impl FsVerityLayer {
     fn new() -> FsVerityLayer {
-        FsVerityLayer { context: Sha256::new(), remaining: 4096 }
+        FsVerityLayer {
+            context: Sha256::new(),
+            remaining: 4096,
+        }
     }
 
     fn add_data(&mut self, data: &[u8]) {
@@ -47,7 +52,11 @@ impl FsVerityHasher {
     }
 
     pub fn new() -> FsVerityHasher {
-        FsVerityHasher { layers: vec![], value: None, n_bytes: 0 }
+        FsVerityHasher {
+            layers: vec![],
+            value: None,
+            n_bytes: 0,
+        }
     }
 
     pub fn add_data(&mut self, data: &[u8]) {
@@ -92,7 +101,7 @@ impl FsVerityHasher {
                     layer.add_data(&value);
                 }
                 if layer.remaining != 4096 {
-                // ...but now this layer itself is complete, so get the value of *it*.
+                    // ...but now this layer itself is complete, so get the value of *it*.
                     value = layer.complete();
                 } else {
                     value = [0u8; 32];

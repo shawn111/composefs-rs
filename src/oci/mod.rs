@@ -1,41 +1,27 @@
 pub mod image;
 pub mod tar;
 
-use std::{
-    io::Read,
-    iter::zip,
-};
+use std::{io::Read, iter::zip};
 
-use anyhow::{
-    Context,
-    Result,
-    bail,
-};
-use oci_spec::image::{
-    Descriptor,
-    ImageConfiguration,
-    ImageManifest,
-};
-use containers_image_proxy::{
-    ImageProxy,
-    OpenedImage,
-};
-use tokio::io::AsyncReadExt;
+use anyhow::{bail, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
+use containers_image_proxy::{ImageProxy, OpenedImage};
+use oci_spec::image::{Descriptor, ImageConfiguration, ImageManifest};
+use tokio::io::AsyncReadExt;
 
 use crate::{
     fsverity::Sha256HashValue,
+    oci::tar::{get_entry, split_async},
     repository::Repository,
-    oci::tar::{
-        get_entry,
-        split_async,
-    },
     splitstream::DigestMap,
-    util::parse_sha256
+    util::parse_sha256,
 };
 
 pub fn import_layer(
-    repo: &Repository, sha256: &Sha256HashValue, name: Option<&str>, tar_stream: &mut impl Read
+    repo: &Repository,
+    sha256: &Sha256HashValue,
+    name: Option<&str>,
+    tar_stream: &mut impl Read,
 ) -> Result<Sha256HashValue> {
     repo.ensure_stream(sha256, |writer| tar::split(tar_stream, writer), name)
 }
@@ -80,7 +66,9 @@ impl<'repo> ImageOp<'repo> {
     }
 
     pub async fn ensure_layer(
-        &self, layer_sha256: &Sha256HashValue, descriptor: &Descriptor
+        &self,
+        layer_sha256: &Sha256HashValue,
+        descriptor: &Descriptor,
     ) -> Result<Sha256HashValue> {
         // We need to use the per_manifest descriptor to download the compressed layer but it gets
         // stored in the repository via the per_config descriptor.  Our return value is the
@@ -102,7 +90,9 @@ impl<'repo> ImageOp<'repo> {
     }
 
     pub async fn ensure_config(
-        &self, manifest_layers: &[Descriptor], descriptor: &Descriptor
+        &self,
+        manifest_layers: &[Descriptor],
+        descriptor: &Descriptor,
     ) -> Result<ContentAndVerity> {
         dbg!("ensure_config", &self.img, manifest_layers, descriptor);
 
@@ -113,7 +103,8 @@ impl<'repo> ImageOp<'repo> {
         } else {
             // We need to add the config to the repo.  We need to parse the config and make sure we
             // have all of the layers first.
-            let (mut blob_reader, driver) = self.proxy.get_descriptor(&self.img, descriptor).await?;
+            let (mut blob_reader, driver) =
+                self.proxy.get_descriptor(&self.img, descriptor).await?;
             let mut raw_config = vec![];
             let (a, b) = tokio::join!(blob_reader.read_to_end(&mut raw_config), driver);
             a?;
@@ -128,7 +119,9 @@ impl<'repo> ImageOp<'repo> {
                 config_maps.insert(&layer_sha256, &layer_id);
             }
 
-            let mut splitstream = self.repo.create_stream(Some(config_sha256), Some(config_maps));
+            let mut splitstream = self
+                .repo
+                .create_stream(Some(config_sha256), Some(config_maps));
             splitstream.write_inline(&raw_config);
             let config_id = self.repo.write_stream(splitstream)?;
 
@@ -139,7 +132,8 @@ impl<'repo> ImageOp<'repo> {
     pub async fn ensure_manifest(&self) -> Result<(Sha256HashValue, Sha256HashValue)> {
         dbg!("ensure_manifest", &self.img);
 
-        let (manifest_digest, raw_manifest) = self.proxy
+        let (manifest_digest, raw_manifest) = self
+            .proxy
             .fetch_manifest_raw_oci(&self.img)
             .await
             .context("Fetching manifest")?;
@@ -171,11 +165,7 @@ impl<'repo> ImageOp<'repo> {
 
 /// Pull the target image, and add the provided tag. If this is a mountable
 /// image (i.e. not an artifact), it is *not* unpacked by default.
-pub async fn pull(
-    repo: &Repository,
-    imgref: &str,
-    _name: Option<&str>,
-) -> Result<()> {
+pub async fn pull(repo: &Repository, imgref: &str, _name: Option<&str>) -> Result<()> {
     let op = ImageOp::new(repo, imgref).await?;
     let (sha256, id) = op.ensure_manifest().await?;
     println!("manifest sha256 {}", hex::encode(sha256));

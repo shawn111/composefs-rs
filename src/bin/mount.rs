@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+
 use clap::Parser;
 
 use composefs_experiments::mount::MountOptions;

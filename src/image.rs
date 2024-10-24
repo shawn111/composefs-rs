@@ -1,21 +1,12 @@
 use std::{
-    cmp::{
-        Ord,
-        Ordering,
-    },
-    ffi::{
-        OsStr,
-        OsString,
-    },
+    cmp::{Ord, Ordering},
+    ffi::{OsStr, OsString},
     path::Path,
     rc::Rc,
 };
 
-use anyhow::{
-    Context,
-    Result,
-    bail,
-};
+use anyhow::{bail, Context, Result};
+
 use crate::fsverity::Sha256HashValue;
 
 #[derive(Debug)]
@@ -47,7 +38,7 @@ pub struct Leaf {
 #[derive(Debug)]
 pub struct Directory {
     pub stat: Stat,
-    pub entries: Vec<DirEnt>
+    pub entries: Vec<DirEnt>,
 }
 
 #[derive(Debug)]
@@ -73,7 +64,7 @@ impl Directory {
             match name.cmp(&last_entry.name) {
                 Ordering::Equal => Ok(self.entries.len() - 1), // the last item, indeed
                 Ordering::Greater => Err(self.entries.len()),  // need to append
-                Ordering::Less => self.entries.binary_search_by_key(&name, |e| &e.name)
+                Ordering::Less => self.entries.binary_search_by_key(&name, |e| &e.name),
             }
         } else {
             Err(0)
@@ -97,7 +88,7 @@ impl Directory {
                 Inode::Directory(ref mut dir) => {
                     // update the stat, but don't drop the entries
                     dir.stat = stat;
-                },
+                }
                 // Entry already exists, is not a dir
                 Inode::Leaf(..) => {
                     todo!("Trying to replace non-dir with dir!");
@@ -105,12 +96,16 @@ impl Directory {
             },
             // Entry doesn't exist yet
             Err(idx) => {
-                self.entries.insert(idx, DirEnt {
-                    name: OsString::from(name),
-                    inode: Inode::Directory(Box::new(Directory {
-                        stat, entries: vec![]
-                    }))
-                });
+                self.entries.insert(
+                    idx,
+                    DirEnt {
+                        name: OsString::from(name),
+                        inode: Inode::Directory(Box::new(Directory {
+                            stat,
+                            entries: vec![],
+                        })),
+                    },
+                );
             }
         }
     }
@@ -123,10 +118,13 @@ impl Directory {
             }
             Err(idx) => {
                 // need to add new item
-                self.entries.insert(idx, DirEnt {
-                    name: OsString::from(name),
-                    inode: Inode::Leaf(leaf)
-                });
+                self.entries.insert(
+                    idx,
+                    DirEnt {
+                        name: OsString::from(name),
+                        inode: Inode::Leaf(leaf),
+                    },
+                );
             }
         }
     }
@@ -137,13 +135,15 @@ impl Directory {
                 Inode::Leaf(ref leaf) => Ok(Rc::clone(leaf)),
                 Inode::Directory(..) => bail!("Cannot hardlink to directory"),
             },
-            _ => bail!("Attempt to hardlink to non-existent file")
+            _ => bail!("Attempt to hardlink to non-existent file"),
         }
     }
 
     pub fn remove(&mut self, name: &OsStr) {
         match self.find_entry(name) {
-            Ok(idx) => { self.entries.remove(idx); }
+            Ok(idx) => {
+                self.entries.remove(idx);
+            }
             _ => { /* not an error to remove an already-missing file */ }
         }
     }
@@ -154,7 +154,7 @@ impl Directory {
 }
 
 pub struct FileSystem {
-    pub root: Directory
+    pub root: Directory,
 }
 
 impl Default for FileSystem {
@@ -167,9 +167,15 @@ impl FileSystem {
     pub fn new() -> Self {
         FileSystem {
             root: Directory {
-                stat: Stat { st_mode: 0o755, st_uid: 0, st_gid: 0, st_mtim_sec: 0, xattrs: vec![], },
+                stat: Stat {
+                    st_mode: 0o755,
+                    st_uid: 0,
+                    st_gid: 0,
+                    st_mtim_sec: 0,
+                    xattrs: vec![],
+                },
                 entries: vec![],
-            }
+            },
         }
     }
 
@@ -178,10 +184,12 @@ impl FileSystem {
 
         if let Some(parent) = name.parent() {
             for segment in parent {
-                if segment.is_empty() || segment == "/" { // Path.parent() is really weird...
+                if segment.is_empty() || segment == "/" {
+                    // Path.parent() is really weird...
                     continue;
                 }
-                dir = dir.recurse(segment)
+                dir = dir
+                    .recurse(segment)
                     .with_context(|| format!("Trying to insert item {:?}", name))?;
             }
         }

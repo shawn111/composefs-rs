@@ -1,47 +1,21 @@
 use std::{
-    ffi::{
-        OsStr,
-        OsString,
-    },
+    ffi::{OsStr, OsString},
     fmt,
-    os::unix::prelude::{
-        OsStrExt,
-        OsStringExt,
-    },
-    path::PathBuf,
     io::Read,
+    os::unix::prelude::{OsStrExt, OsStringExt},
+    path::PathBuf,
 };
 
-use anyhow::{
-    bail,
-    Result
-};
+use anyhow::{bail, Result};
 use rustix::fs::makedev;
-use tar::{
-    EntryType,
-    Header,
-    PaxExtensions,
-};
-use tokio::io::{
-    AsyncRead,
-    AsyncReadExt,
-};
+use tar::{EntryType, Header, PaxExtensions};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     dumpfile,
-    image::{
-        LeafContent,
-        Stat,
-    },
-    splitstream::{
-        SplitStreamData,
-        SplitStreamReader,
-        SplitStreamWriter,
-    },
-    util::{
-        read_exactish,
-        read_exactish_async,
-    },
+    image::{LeafContent, Stat},
+    splitstream::{SplitStreamData, SplitStreamReader, SplitStreamWriter},
+    util::{read_exactish, read_exactish_async},
 };
 
 fn read_header<R: Read>(reader: &mut R) -> Result<Option<Header>> {
@@ -65,10 +39,7 @@ async fn read_header_async(reader: &mut (impl AsyncRead + Unpin)) -> Result<Opti
 /// Splits the tar file from tar_stream into a Split Stream.  The store_data function is
 /// responsible for ensuring that "external data" is in the composefs repository and returns the
 /// fsverity hash value of that data.
-pub fn split<R: Read>(
-    tar_stream: &mut R,
-    writer: &mut SplitStreamWriter,
-) -> Result<()> {
+pub fn split<R: Read>(tar_stream: &mut R, writer: &mut SplitStreamWriter) -> Result<()> {
     while let Some(header) = read_header(tar_stream)? {
         // the header always gets stored as inline data
         writer.write_inline(header.as_bytes());
@@ -96,7 +67,8 @@ pub fn split<R: Read>(
 }
 
 pub async fn split_async(
-    mut tar_stream: impl AsyncRead + Unpin, writer: &mut SplitStreamWriter<'_>
+    mut tar_stream: impl AsyncRead + Unpin,
+    writer: &mut SplitStreamWriter<'_>,
 ) -> Result<()> {
     while let Some(header) = read_header_async(&mut tar_stream).await? {
         // the header always gets stored as inline data
@@ -143,7 +115,9 @@ impl fmt::Display for TarEntry {
         match self.item {
             TarItem::Hardlink(ref target) => dumpfile::write_hardlink(fmt, &self.path, target),
             TarItem::Directory => dumpfile::write_directory(fmt, &self.path, &self.stat, 1),
-            TarItem::Leaf(ref content) => dumpfile::write_leaf(fmt, &self.path, &self.stat, content, 1),
+            TarItem::Leaf(ref content) => {
+                dumpfile::write_leaf(fmt, &self.path, &self.stat, content, 1)
+            }
         }
     }
 }
@@ -199,21 +173,27 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Ta
 
         let item = match reader.read_exact(size as usize, ((size + 511) & !511) as usize)? {
             SplitStreamData::External(id) => match header.entry_type() {
-                EntryType::Regular | EntryType::Continuous => TarItem::Leaf(LeafContent::ExternalFile(id, size)),
-                _ => bail!("Unsupported external-chunked entry {:?} {}", header, hex::encode(id)),
+                EntryType::Regular | EntryType::Continuous => {
+                    TarItem::Leaf(LeafContent::ExternalFile(id, size))
+                }
+                _ => bail!(
+                    "Unsupported external-chunked entry {:?} {}",
+                    header,
+                    hex::encode(id)
+                ),
             },
             SplitStreamData::Inline(content) => match header.entry_type() {
                 EntryType::GNULongLink => {
                     gnu_longlink.extend(content);
                     continue;
-                },
+                }
                 EntryType::GNULongName => {
                     gnu_longname.extend(content);
                     continue;
-                },
+                }
                 EntryType::XGlobalHeader => {
                     todo!();
-                },
+                }
                 EntryType::XHeader => {
                     for item in PaxExtensions::new(&content) {
                         let extension = item?;
@@ -229,48 +209,52 @@ pub fn get_entry<R: Read>(reader: &mut SplitStreamReader<R>) -> Result<Option<Ta
                         }
                     }
                     continue;
-                },
+                }
                 EntryType::Directory => TarItem::Directory,
-                EntryType::Regular | EntryType::Continuous => TarItem::Leaf(LeafContent::InlineFile(content)),
+                EntryType::Regular | EntryType::Continuous => {
+                    TarItem::Leaf(LeafContent::InlineFile(content))
+                }
                 EntryType::Link => TarItem::Hardlink({
-                    let Some(link_name) = header.link_name_bytes() else { bail!("link without a name?") };
+                    let Some(link_name) = header.link_name_bytes() else {
+                        bail!("link without a name?")
+                    };
                     OsString::from(path_from_tar(pax_longlink, gnu_longlink, &link_name))
                 }),
                 EntryType::Symlink => TarItem::Leaf(LeafContent::Symlink({
-                    let Some(link_name) = header.link_name_bytes() else { bail!("symlink without a name?") };
+                    let Some(link_name) = header.link_name_bytes() else {
+                        bail!("symlink without a name?")
+                    };
                     symlink_target_from_tar(pax_longlink, gnu_longlink, &link_name)
                 })),
                 EntryType::Block => TarItem::Leaf(LeafContent::BlockDevice(
                     match (header.device_major()?, header.device_minor()?) {
                         (Some(major), Some(minor)) => makedev(major, minor),
                         _ => bail!("Device entry without device numbers?"),
-                    }
+                    },
                 )),
                 EntryType::Char => TarItem::Leaf(LeafContent::CharacterDevice(
                     match (header.device_major()?, header.device_minor()?) {
                         (Some(major), Some(minor)) => makedev(major, minor),
                         _ => bail!("Device entry without device numbers?"),
-                    }
+                    },
                 )),
                 EntryType::Fifo => TarItem::Leaf(LeafContent::Fifo),
                 _ => {
                     todo!("Unsupported entry {:?}", header);
                 }
-            }
+            },
         };
 
-        return Ok(
-            Some(
-                TarEntry {
-                    path: path_from_tar(pax_longname, gnu_longname, &header.path_bytes()),
-                    stat: Stat {
-                        st_uid: header.uid()? as u32,
-                        st_gid: header.gid()? as u32,
-                        st_mode: header.mode()?,
-                        st_mtim_sec: header.mtime()? as i64,
-                        xattrs
-                    },
-                    item
+        return Ok(Some(TarEntry {
+            path: path_from_tar(pax_longname, gnu_longname, &header.path_bytes()),
+            stat: Stat {
+                st_uid: header.uid()? as u32,
+                st_gid: header.gid()? as u32,
+                st_mode: header.mode()?,
+                st_mtim_sec: header.mtime()? as i64,
+                xattrs,
+            },
+            item,
         }));
     }
 }

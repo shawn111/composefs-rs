@@ -2,71 +2,30 @@ use std::{
     collections::HashSet,
     ffi::CStr,
     fs::File,
-    io::{
-        ErrorKind,
-        Read,
-        Write,
-    },
+    io::{ErrorKind, Read, Write},
     os::fd::OwnedFd,
-    path::{
-        Path,
-        PathBuf,
-    },
+    path::{Path, PathBuf},
     process::Command,
 };
 
-use anyhow::{
-    Context,
-    Result,
-    bail,
-    ensure,
-};
+use anyhow::{bail, ensure, Context, Result};
 use rustix::{
     fs::{
-        FileType,
-        Dir,
-        Access,
-        AtFlags,
-        CWD,
-        FlockOperation,
-        Mode,
-        OFlags,
-        accessat,
-        fdatasync,
-        flock,
-        linkat,
-        mkdirat,
-        open,
-        openat,
-        readlinkat,
-        symlinkat,
+        accessat, fdatasync, flock, linkat, mkdirat, open, openat, readlinkat, symlinkat, Access,
+        AtFlags, Dir, FileType, FlockOperation, Mode, OFlags, CWD,
     },
-    io::{
-        Errno,
-        Result as ErrnoResult
-    },
+    io::{Errno, Result as ErrnoResult},
 };
 
 use crate::{
     fsverity::{
-        FsVerityHashValue,
-        Sha256HashValue,
         digest::FsVerityHasher,
-        ioctl::{
-            fs_ioc_enable_verity,
-            fs_ioc_measure_verity,
-        },
+        ioctl::{fs_ioc_enable_verity, fs_ioc_measure_verity},
+        FsVerityHashValue, Sha256HashValue,
     },
     mount::mount_fd,
-    splitstream::{
-        DigestMap,
-        SplitStreamWriter,
-        SplitStreamReader,
-    },
-    util::{
-        parse_sha256,
-        proc_self_fd,
-    },
+    splitstream::{DigestMap, SplitStreamReader, SplitStreamWriter},
+    util::{parse_sha256, proc_self_fd},
 };
 
 pub struct Repository {
@@ -76,8 +35,7 @@ pub struct Repository {
 
 impl Drop for Repository {
     fn drop(&mut self) {
-        flock(&self.repository, FlockOperation::Unlock)
-            .expect("repository unlock failed");
+        flock(&self.repository, FlockOperation::Unlock).expect("repository unlock failed");
     }
 }
 
@@ -87,15 +45,14 @@ impl Repository {
         let repository = open(&path, OFlags::RDONLY, Mode::empty())
             .with_context(|| format!("Cannot open composefs repository {path:?}"))?;
 
-        flock(&repository, FlockOperation::LockShared).
-            with_context(|| format!("Cannot lock repository {path:?}"))?;
+        flock(&repository, FlockOperation::LockShared)
+            .with_context(|| format!("Cannot lock repository {path:?}"))?;
 
         Ok(Repository { repository, path })
     }
 
     pub fn open_user() -> Result<Repository> {
-        let home = std::env::var("HOME")
-            .with_context(|| "$HOME must be set when in user mode")?;
+        let home = std::env::var("HOME").with_context(|| "$HOME must be set when in user mode")?;
 
         Repository::open_path(PathBuf::from(home).join(".var/lib/composefs"))
     }
@@ -105,8 +62,10 @@ impl Repository {
     }
 
     fn ensure_dir(&self, dir: impl AsRef<Path>) -> ErrnoResult<()> {
-        mkdirat(&self.repository, dir.as_ref(), 0o755.into())
-            .or_else(|e| match e { Errno::EXIST => Ok(()), _ => Err(e) })
+        mkdirat(&self.repository, dir.as_ref(), 0o755.into()).or_else(|e| match e {
+            Errno::EXIST => Ok(()),
+            _ => Err(e),
+        })
     }
 
     pub fn ensure_object(&self, data: &[u8]) -> Result<Sha256HashValue> {
@@ -122,8 +81,13 @@ impl Repository {
         self.ensure_dir("objects")?;
         self.ensure_dir(&dir)?;
 
-        let fd = openat(&self.repository, &dir, OFlags::RDWR | OFlags::CLOEXEC | OFlags::TMPFILE, 0o666.into())?;
-        rustix::io::write(&fd, data)?;  // TODO: no write_all() here...
+        let fd = openat(
+            &self.repository,
+            &dir,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::TMPFILE,
+            0o666.into(),
+        )?;
+        rustix::io::write(&fd, data)?; // TODO: no write_all() here...
         fdatasync(&fd)?;
 
         // We can't enable verity with an open writable fd, so re-open and close the old one.
@@ -136,7 +100,13 @@ impl Repository {
         let measured_digest: Sha256HashValue = fs_ioc_measure_verity(&ro_fd)?;
         assert!(measured_digest == digest);
 
-        if let Err(err) = linkat(CWD, proc_self_fd(&ro_fd), &self.repository, file, AtFlags::SYMLINK_FOLLOW) {
+        if let Err(err) = linkat(
+            CWD,
+            proc_self_fd(&ro_fd),
+            &self.repository,
+            file,
+            AtFlags::SYMLINK_FOLLOW,
+        ) {
             if err.kind() != ErrorKind::AlreadyExists {
                 return Err(err.into());
             }
@@ -146,7 +116,11 @@ impl Repository {
         Ok(digest)
     }
 
-    fn open_with_verity(&self, filename: &str, expected_verity: &Sha256HashValue) -> Result<OwnedFd> {
+    fn open_with_verity(
+        &self,
+        filename: &str,
+        expected_verity: &Sha256HashValue,
+    ) -> Result<OwnedFd> {
         let fd = self.openat(filename, OFlags::RDONLY)?;
         let measured_verity: Sha256HashValue = fs_ioc_measure_verity(&fd)?;
         if measured_verity != *expected_verity {
@@ -159,7 +133,11 @@ impl Repository {
     /// Creates a SplitStreamWriter for writing a split stream.
     /// You should write the data to the returned object and then pass it to .store_stream() to
     /// store the result.
-    pub fn create_stream(&self, sha256: Option<Sha256HashValue>, maps: Option<DigestMap>) -> SplitStreamWriter {
+    pub fn create_stream(
+        &self,
+        sha256: Option<Sha256HashValue>,
+        maps: Option<DigestMap>,
+    ) -> SplitStreamWriter {
         SplitStreamWriter::new(self, maps, sha256)
     }
 
@@ -167,8 +145,14 @@ impl Repository {
         // "objects/0c/9513d99b120ee9a709c4d6554d938f6b2b7e213cf5b26f2e255c0b77e40379"
         let bytes = path.as_ref();
         ensure!(bytes.len() == 73, "stream symlink has incorrect length");
-        ensure!(bytes.starts_with(b"objects/"), "stream symlink has incorrect prefix");
-        ensure!(bytes[10] == b'/', "stream symlink has incorrect path separator");
+        ensure!(
+            bytes.starts_with(b"objects/"),
+            "stream symlink has incorrect prefix"
+        );
+        ensure!(
+            bytes[10] == b'/',
+            "stream symlink has incorrect path separator"
+        );
         let mut result = Sha256HashValue::EMPTY;
         hex::decode_to_slice(&bytes[8..10], &mut result[..1])
             .context("stream symlink has incorrect format")?;
@@ -190,12 +174,13 @@ impl Repository {
                 // we could also measure the verity of the destination object, but it doesn't
                 // improve anything, since we don't know if it was the original one.
                 let bytes = target.as_bytes();
-                ensure!(bytes.starts_with(b"../"), "stream symlink has incorrect prefix");
+                ensure!(
+                    bytes.starts_with(b"../"),
+                    "stream symlink has incorrect prefix"
+                );
                 Ok(Some(Repository::parse_object_path(&bytes[3..])?))
-            },
-            Err(Errno::NOENT) => {
-                Ok(None)
-            },
+            }
+            Err(Errno::NOENT) => Ok(None),
             Err(err) => Err(err)?,
         }
     }
@@ -243,7 +228,7 @@ impl Repository {
                 let object_path = Repository::format_object_path(&object_id);
                 self.ensure_symlink(&stream_path, &object_path)?;
                 object_id
-            },
+            }
         };
 
         if let Some(name) = reference {
@@ -254,36 +239,41 @@ impl Repository {
         Ok(object_id)
     }
 
-    pub fn open_stream(&self, name: &str, verity: Option<&Sha256HashValue>) -> Result<SplitStreamReader<File>> {
+    pub fn open_stream(
+        &self,
+        name: &str,
+        verity: Option<&Sha256HashValue>,
+    ) -> Result<SplitStreamReader<File>> {
         let filename = format!("streams/{}", name);
 
-        let file = File::from(
-            if let Some(verity_hash) = verity {
-                self.open_with_verity(&filename, verity_hash)?
-            } else {
-                self.openat(&filename, OFlags::RDONLY)?
-            }
-        );
+        let file = File::from(if let Some(verity_hash) = verity {
+            self.open_with_verity(&filename, verity_hash)?
+        } else {
+            self.openat(&filename, OFlags::RDONLY)?
+        });
 
         SplitStreamReader::new(file)
     }
 
     fn open_object(&self, id: &Sha256HashValue) -> Result<OwnedFd> {
-        self.open_with_verity(&format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..])), id)
+        self.open_with_verity(
+            &format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..])),
+            id,
+        )
     }
 
     pub fn merge_splitstream(
-        &self, name: &str, verity: Option<&Sha256HashValue>, stream: &mut impl Write
+        &self,
+        name: &str,
+        verity: Option<&Sha256HashValue>,
+        stream: &mut impl Write,
     ) -> Result<()> {
         let mut split_stream = self.open_stream(name, verity)?;
-        split_stream.cat(
-            stream,
-            |id| -> Result<Vec<u8>> {
-                let mut data = vec![];
-                File::from(self.open_object(id)?).read_to_end(&mut data)?;
-                Ok(data)
-            }
-        )?;
+        split_stream.cat(stream, |id| -> Result<Vec<u8>> {
+            let mut data = vec![];
+            File::from(self.open_object(id)?).read_to_end(&mut data)?;
+            Ok(data)
+        })?;
 
         Ok(())
     }
@@ -292,7 +282,11 @@ impl Repository {
     pub fn write_image(&self, name: Option<&str>, data: &[u8]) -> Result<Sha256HashValue> {
         let object_id = self.ensure_object(data)?;
 
-        let object_path = format!("objects/{:02x}/{}", object_id[0], hex::encode(&object_id[1..]));
+        let object_path = format!(
+            "objects/{:02x}/{}",
+            object_id[0],
+            hex::encode(&object_id[1..])
+        );
         let image_path = format!("images/{}", hex::encode(object_id));
 
         self.ensure_symlink(&image_path, &object_path)?;
@@ -358,7 +352,10 @@ impl Repository {
     }
 
     pub fn ensure_symlink<P: AsRef<Path>>(&self, name: P, target: &str) -> ErrnoResult<()> {
-        self.symlink(name, target).or_else(|e| match e { Errno::EXIST => Ok(()), _ => Err(e) })
+        self.symlink(name, target).or_else(|e| match e {
+            Errno::EXIST => Ok(()),
+            _ => Err(e),
+        })
     }
 
     fn read_symlink_hashvalue(dirfd: &OwnedFd, name: &CStr) -> Result<Sha256HashValue> {
@@ -369,7 +366,7 @@ impl Repository {
         // XXX: or is that something for fsck?
         if link_size > 64 {
             let mut value = Sha256HashValue::EMPTY;
-            hex::decode_to_slice(&link_bytes[link_size-64..link_size], &mut value)?;
+            hex::decode_to_slice(&link_bytes[link_size - 64..link_size], &mut value)?;
             Ok(value)
         } else {
             bail!("symlink has wrong format")
@@ -390,13 +387,16 @@ impl Repository {
                                 let dirfd = openat(&fd, filename, OFlags::RDONLY, Mode::empty())?;
                                 Repository::walk_symlinkdir(dirfd, objects)?;
                             }
-                        },
+                        }
                         FileType::Symlink => {
-                            objects.insert(Repository::read_symlink_hashvalue(&fd, entry.file_name())?);
-                        },
+                            objects.insert(Repository::read_symlink_hashvalue(
+                                &fd,
+                                entry.file_name(),
+                            )?);
+                        }
                         _ => {
                             bail!("Unexpected file type encountered");
-                        },
+                        }
                     }
                 }
             }
@@ -414,7 +414,12 @@ impl Repository {
 
         let category_fd = self.openat(category, OFlags::RDONLY | OFlags::DIRECTORY)?;
 
-        let refs = openat(&category_fd, "refs", OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty())?;
+        let refs = openat(
+            &category_fd,
+            "refs",
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )?;
         Repository::walk_symlinkdir(refs, &mut objects)?;
 
         for item in Dir::read_from(&category_fd)? {
@@ -478,16 +483,17 @@ impl Repository {
             objects.insert(object);
 
             let mut split_stream = self.open_stream(&hex::encode(object), None)?;
-            split_stream.get_object_refs(
-                |id| {
-                    println!("   with {}", hex::encode(*id));
-                    objects.insert(*id);
-                }
-            )?;
+            split_stream.get_object_refs(|id| {
+                println!("   with {}", hex::encode(*id));
+                objects.insert(*id);
+            })?;
         }
 
         for first_byte in 0x0..=0xff {
-            let dirfd = self.openat(&format!("objects/{first_byte:02x}"), OFlags::RDONLY | OFlags::DIRECTORY)?;
+            let dirfd = self.openat(
+                &format!("objects/{first_byte:02x}"),
+                OFlags::RDONLY | OFlags::DIRECTORY,
+            )?;
             for item in Dir::new(dirfd)? {
                 match item {
                     Err(e) => Err(e)?,
@@ -508,7 +514,7 @@ impl Repository {
             }
         }
 
-        Ok(flock(&self.repository, FlockOperation::LockShared)?)  // XXX: finally { } ?
+        Ok(flock(&self.repository, FlockOperation::LockShared)?) // XXX: finally { } ?
     }
 
     pub fn fsck(&self) -> Result<()> {

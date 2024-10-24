@@ -3,31 +3,15 @@
  * See doc/splitstream.md
  */
 
-use std::io::{
-    BufReader,
-    Read,
-    Write,
-};
+use std::io::{BufReader, Read, Write};
 
-use anyhow::{
-    Result,
-    bail,
-};
-use sha2::{
-    Digest,
-    Sha256
-};
-use zstd::stream::{
-    write::Encoder,
-    read::Decoder,
-};
+use anyhow::{bail, Result};
+use sha2::{Digest, Sha256};
+use zstd::stream::{read::Decoder, write::Encoder};
 
 use crate::{
+    fsverity::{FsVerityHashValue, Sha256HashValue},
     repository::Repository,
-    fsverity::{
-        FsVerityHashValue,
-        Sha256HashValue,
-    },
     util::read_exactish,
 };
 
@@ -37,7 +21,7 @@ pub struct DigestMapEntry {
 }
 
 pub struct DigestMap {
-    pub map: Vec<DigestMapEntry>
+    pub map: Vec<DigestMapEntry>,
 }
 
 impl Default for DigestMap {
@@ -54,14 +38,20 @@ impl DigestMap {
     pub fn lookup(&self, body: &Sha256HashValue) -> Option<&Sha256HashValue> {
         match self.map.binary_search_by_key(body, |e| e.body) {
             Ok(idx) => Some(&self.map[idx].verity),
-            Err(..) => None
+            Err(..) => None,
         }
     }
 
     pub fn insert(&mut self, body: &Sha256HashValue, verity: &Sha256HashValue) {
         match self.map.binary_search_by_key(body, |e| e.body) {
-            Ok(idx) => assert_eq!(self.map[idx].verity, *verity),  // or else, bad things...
-            Err(idx) => self.map.insert(idx, DigestMapEntry { body: *body, verity: *verity }),
+            Ok(idx) => assert_eq!(self.map[idx].verity, *verity), // or else, bad things...
+            Err(idx) => self.map.insert(
+                idx,
+                DigestMapEntry {
+                    body: *body,
+                    verity: *verity,
+                },
+            ),
         }
     }
 }
@@ -74,7 +64,11 @@ pub struct SplitStreamWriter<'a> {
 }
 
 impl<'a> SplitStreamWriter<'a> {
-    pub fn new(repo: &Repository, refs: Option<DigestMap>, sha256: Option<Sha256HashValue>) -> SplitStreamWriter {
+    pub fn new(
+        repo: &Repository,
+        refs: Option<DigestMap>,
+        sha256: Option<Sha256HashValue>,
+    ) -> SplitStreamWriter {
         // SAFETY: we surely can't get an error writing the header to a Vec<u8>
         let mut writer = Encoder::new(vec![], 0).unwrap();
 
@@ -85,7 +79,7 @@ impl<'a> SplitStreamWriter<'a> {
                     writer.write_all(&entry.body).unwrap();
                     writer.write_all(&entry.verity).unwrap();
                 }
-            },
+            }
             None => {
                 writer.write_all(&0u64.to_le_bytes()).unwrap();
             }
@@ -95,7 +89,7 @@ impl<'a> SplitStreamWriter<'a> {
             repo,
             inline_content: vec![],
             writer,
-            sha256: sha256.map(|x| (Sha256::new(), x))
+            sha256: sha256.map(|x| (Sha256::new(), x)),
         }
     }
 
@@ -107,7 +101,11 @@ impl<'a> SplitStreamWriter<'a> {
     /// flush any buffered inline data, taking new_value as the new value of the buffer
     fn flush_inline(&mut self, new_value: Vec<u8>) -> Result<()> {
         if !self.inline_content.is_empty() {
-            SplitStreamWriter::write_fragment(&mut self.writer, self.inline_content.len(), &self.inline_content)?;
+            SplitStreamWriter::write_fragment(
+                &mut self.writer,
+                self.inline_content.len(),
+                &self.inline_content,
+            )?;
             self.inline_content = new_value;
         }
         Ok(())
@@ -202,7 +200,9 @@ impl<R: Read> SplitStreamReader<R> {
             u64::from_le_bytes(buf)
         } as usize;
 
-        let mut refs = DigestMap { map: Vec::with_capacity(n_map_entries) };
+        let mut refs = DigestMap {
+            map: Vec::with_capacity(n_map_entries),
+        };
         for _ in 0..n_map_entries {
             let mut body = [0u8; 32];
             let mut verity = [0u8; 32];
@@ -212,10 +212,19 @@ impl<R: Read> SplitStreamReader<R> {
             refs.map.push(DigestMapEntry { body, verity });
         }
 
-        Ok(SplitStreamReader { decoder, refs, inline_bytes: 0 })
+        Ok(SplitStreamReader {
+            decoder,
+            refs,
+            inline_bytes: 0,
+        })
     }
 
-    fn ensure_chunk(&mut self, eof_ok: bool, ext_ok: bool, expected_bytes: usize) -> Result<ChunkType> {
+    fn ensure_chunk(
+        &mut self,
+        eof_ok: bool,
+        ext_ok: bool,
+        expected_bytes: usize,
+    ) -> Result<ChunkType> {
         if self.inline_bytes == 0 {
             match read_u64_le(&mut self.decoder)? {
                 None => {
@@ -223,7 +232,7 @@ impl<R: Read> SplitStreamReader<R> {
                         bail!("Unexpected EOF when parsing splitstream");
                     }
                     return Ok(ChunkType::Eof);
-                },
+                }
                 Some(0) => {
                     if !ext_ok {
                         bail!("Unexpected external reference when parsing splitstream");
@@ -266,7 +275,11 @@ impl<R: Read> SplitStreamReader<R> {
         Ok(())
     }
 
-    pub fn read_exact(&mut self, actual_size: usize, stored_size: usize) -> Result<SplitStreamData> {
+    pub fn read_exact(
+        &mut self,
+        actual_size: usize,
+        stored_size: usize,
+    ) -> Result<SplitStreamData> {
         if let ChunkType::External(id) = self.ensure_chunk(false, true, stored_size)? {
             // ...and the padding
             if actual_size < stored_size {
@@ -282,7 +295,11 @@ impl<R: Read> SplitStreamReader<R> {
         }
     }
 
-    pub fn cat(&mut self, output: &mut impl Write, mut load_data: impl FnMut(&Sha256HashValue) -> Result<Vec<u8>>) -> Result<()> {
+    pub fn cat(
+        &mut self,
+        output: &mut impl Write,
+        mut load_data: impl FnMut(&Sha256HashValue) -> Result<Vec<u8>>,
+    ) -> Result<()> {
         let mut buffer = vec![];
 
         loop {
@@ -292,7 +309,7 @@ impl<R: Read> SplitStreamReader<R> {
                     read_into_vec(&mut self.decoder, &mut buffer, self.inline_bytes)?;
                     self.inline_bytes = 0;
                     output.write_all(&buffer)?;
-                },
+                }
                 ChunkType::External(ref id) => {
                     output.write_all(&load_data(id)?)?;
                 }
@@ -313,7 +330,7 @@ impl<R: Read> SplitStreamReader<R> {
                 ChunkType::Inline => {
                     read_into_vec(&mut self.decoder, &mut buffer, self.inline_bytes)?;
                     self.inline_bytes = 0;
-                },
+                }
                 ChunkType::External(ref id) => {
                     callback(id);
                 }

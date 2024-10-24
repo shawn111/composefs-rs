@@ -1,24 +1,12 @@
 use std::{
     io::Read,
-    os::fd::{
-        AsFd,
-        AsRawFd,
-    },
+    os::fd::{AsFd, AsRawFd},
 };
 
-use anyhow::{
-    Context,
-    Result,
-};
-use tokio::io::{
-    AsyncRead,
-    AsyncReadExt,
-};
+use anyhow::{Context, Result};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::fsverity::{
-    FsVerityHashValue,
-    Sha256HashValue,
-};
+use crate::fsverity::{FsVerityHashValue, Sha256HashValue};
 
 pub fn proc_self_fd<A: AsFd>(fd: &A) -> String {
     format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd())
@@ -32,8 +20,8 @@ pub fn read_exactish<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<bool> {
     while !todo.is_empty() {
         match reader.read(todo) {
             Ok(0) => match todo.len() {
-                s if s == buflen => return Ok(false),  // clean EOF
-                _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?
+                s if s == buflen => return Ok(false), // clean EOF
+                _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?,
             },
             Ok(n) => {
                 todo = &mut todo[n..];
@@ -50,15 +38,18 @@ pub fn read_exactish<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<bool> {
     Ok(true)
 }
 
-pub async fn read_exactish_async(reader: &mut (impl AsyncRead + Unpin), buf: &mut [u8]) -> Result<bool> {
+pub async fn read_exactish_async(
+    reader: &mut (impl AsyncRead + Unpin),
+    buf: &mut [u8],
+) -> Result<bool> {
     let buflen = buf.len();
     let mut todo: &mut [u8] = buf;
 
     while !todo.is_empty() {
         match reader.read(todo).await {
             Ok(0) => match todo.len() {
-                s if s == buflen => return Ok(false),  // clean EOF
-                _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?
+                s if s == buflen => return Ok(false), // clean EOF
+                _ => Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?,
             },
             Ok(n) => {
                 todo = &mut todo[n..];
@@ -77,7 +68,6 @@ pub async fn read_exactish_async(reader: &mut (impl AsyncRead + Unpin), buf: &mu
 
 pub fn parse_sha256(string: impl AsRef<str>) -> Result<Sha256HashValue> {
     let mut value = Sha256HashValue::EMPTY;
-    hex::decode_to_slice(string.as_ref(), &mut value)
-        .context("Invalid SHA256 hash value")?;
+    hex::decode_to_slice(string.as_ref(), &mut value).context("Invalid SHA256 hash value")?;
     Ok(value)
 }

@@ -24,17 +24,20 @@ type FsIocEnableVerity = ioctl::WriteOpcode<b'f', 133, FsVerityEnableArg>;
 
 pub fn fs_ioc_enable_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> Result<()> {
     unsafe {
-        ioctl::ioctl(fd, ioctl::Setter::<FsIocEnableVerity, FsVerityEnableArg>::new(FsVerityEnableArg {
-            version: 1,
-            hash_algorithm: H::ALGORITHM as u32,
-            block_size: 4096,
-            salt_size: 0,
-            salt_ptr: 0,
-            sig_size: 0,
-            __reserved1: 0,
-            sig_ptr: 0,
-            __reserved2: [0; 11],
-        }))?;
+        ioctl::ioctl(
+            fd,
+            ioctl::Setter::<FsIocEnableVerity, FsVerityEnableArg>::new(FsVerityEnableArg {
+                version: 1,
+                hash_algorithm: H::ALGORITHM as u32,
+                block_size: 4096,
+                salt_size: 0,
+                salt_ptr: 0,
+                sig_size: 0,
+                __reserved1: 0,
+                sig_ptr: 0,
+                __reserved2: [0; 11],
+            }),
+        )?;
     }
 
     Ok(())
@@ -54,10 +57,17 @@ pub fn fs_ioc_measure_verity<F: AsFd, H: FsVerityHashValue>(fd: F) -> Result<H> 
     let digest_size = std::mem::size_of::<H>() as u16;
     let digest_algorithm = H::ALGORITHM as u16;
 
-    let mut digest = FsVerityDigest::<H> { digest_algorithm, digest_size, digest: H::EMPTY };
+    let mut digest = FsVerityDigest::<H> {
+        digest_algorithm,
+        digest_size,
+        digest: H::EMPTY,
+    };
 
     unsafe {
-        ioctl::ioctl(fd, ioctl::Updater::<FsIocMeasureVerity, FsVerityDigest<H>>::new(&mut digest))?;
+        ioctl::ioctl(
+            fd,
+            ioctl::Updater::<FsIocMeasureVerity, FsVerityDigest<H>>::new(&mut digest),
+        )?;
     }
 
     if digest.digest_algorithm != digest_algorithm || digest.digest_size != digest_size {

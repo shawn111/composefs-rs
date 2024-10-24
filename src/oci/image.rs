@@ -3,24 +3,16 @@ use std::{
     io::Read,
     os::unix::ffi::OsStrExt,
     path::Component,
-    process::{
-        Command,
-        Stdio
-    },
+    process::{Command, Stdio},
     rc::Rc,
 };
 
-use anyhow::{
-    Result,
-    bail,
-};
+use anyhow::{bail, Result};
+
 use crate::{
     dumpfile::write_dumpfile,
     fsverity::Sha256HashValue,
-    image::{
-        FileSystem,
-        Leaf,
-    },
+    image::{FileSystem, Leaf},
     oci,
     repository::Repository,
 };
@@ -28,7 +20,9 @@ use crate::{
 pub fn process_entry(filesystem: &mut FileSystem, entry: oci::tar::TarEntry) -> Result<()> {
     let mut components = entry.path.components();
 
-    let Some(Component::Normal(filename)) = components.next_back() else { bail!("Empty filename") };
+    let Some(Component::Normal(filename)) = components.next_back() else {
+        bail!("Empty filename")
+    };
 
     let mut dir = &mut filesystem.root;
     for component in components {
@@ -39,23 +33,26 @@ pub fn process_entry(filesystem: &mut FileSystem, entry: oci::tar::TarEntry) -> 
 
     let bytes = filename.as_bytes();
     if let Some(whiteout) = bytes.strip_prefix(b".wh.") {
-        if whiteout == b".wh.opq" {  // complete name is '.wh..wh.opq'
+        if whiteout == b".wh.opq" {
+            // complete name is '.wh..wh.opq'
             dir.remove_all()
         } else {
             dir.remove(OsStr::from_bytes(whiteout))
         }
     } else {
         match entry.item {
-            oci::tar::TarItem::Directory => {
-                dir.mkdir(filename, entry.stat)
-            },
-            oci::tar::TarItem::Leaf(content) => {
-                dir.insert(filename, Rc::new(Leaf { stat: entry.stat, content }))
-            },
+            oci::tar::TarItem::Directory => dir.mkdir(filename, entry.stat),
+            oci::tar::TarItem::Leaf(content) => dir.insert(
+                filename,
+                Rc::new(Leaf {
+                    stat: entry.stat,
+                    content,
+                }),
+            ),
             oci::tar::TarItem::Hardlink(ref target) => {
                 // TODO: would be nice to do this inline, but borrow checker doesn't like it
                 filesystem.hardlink(&entry.path, target)?;
-            },
+            }
         }
     }
 
@@ -68,7 +65,7 @@ pub fn compose_filesystem(repo: &Repository, layers: &[String]) -> Result<FileSy
     for layer in layers {
         let mut split_stream = repo.open_stream(layer, None)?;
         while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
-           process_entry(&mut filesystem, entry)?;
+            process_entry(&mut filesystem, entry)?;
         }
     }
 
@@ -83,14 +80,16 @@ pub fn create_dumpfile(repo: &Repository, layers: &[String]) -> Result<()> {
 }
 
 pub fn create_image_from_layers(
-    repo: &Repository, name: Option<&str>, layers: &Vec<String>
+    repo: &Repository,
+    name: Option<&str>,
+    layers: &Vec<String>,
 ) -> Result<Sha256HashValue> {
     let mut filesystem = FileSystem::new();
 
     for layer in layers {
         let mut split_stream = repo.open_stream(layer, None)?;
         while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
-           process_entry(&mut filesystem, entry)?;
+            process_entry(&mut filesystem, entry)?;
         }
     }
 
@@ -118,7 +117,11 @@ pub fn create_image_from_layers(
 
 use oci_spec::image::ImageConfiguration;
 
-pub fn create_image(repo: &Repository, config: &str, name: Option<&str>) -> Result<Sha256HashValue> {
+pub fn create_image(
+    repo: &Repository,
+    config: &str,
+    name: Option<&str>,
+) -> Result<Sha256HashValue> {
     let mut raw_config = vec![];
     repo.merge_splitstream(config, None, &mut raw_config)?;
     let config = ImageConfiguration::from_reader(raw_config.as_slice())?;
@@ -126,28 +129,28 @@ pub fn create_image(repo: &Repository, config: &str, name: Option<&str>) -> Resu
     for diffid in config.rootfs().diff_ids() {
         layers.push(match diffid.strip_prefix("sha256:") {
             Some(rest) => rest.to_string(),
-            None => bail!("Invalid diffid {diffid}")
+            None => bail!("Invalid diffid {diffid}"),
         });
     }
     create_image_from_layers(repo, name, &layers)
 }
 
 #[cfg(test)]
-use std::{
-    io::BufRead,
-    path::PathBuf,
-};
+use crate::image::{LeafContent, Stat};
 #[cfg(test)]
-use crate::image::{
-    LeafContent,
-    Stat,
-};
+use std::{io::BufRead, path::PathBuf};
 
 #[cfg(test)]
 fn file_entry(path: &str) -> oci::tar::TarEntry {
     oci::tar::TarEntry {
         path: PathBuf::from(path),
-        stat: Stat { st_mode: 0o644, st_uid: 0, st_gid: 0, st_mtim_sec: 0, xattrs: vec![]},
+        stat: Stat {
+            st_mode: 0o644,
+            st_uid: 0,
+            st_gid: 0,
+            st_mtim_sec: 0,
+            xattrs: vec![],
+        },
         item: oci::tar::TarItem::Leaf(LeafContent::InlineFile(vec![])),
     }
 }
@@ -156,7 +159,13 @@ fn file_entry(path: &str) -> oci::tar::TarEntry {
 fn dir_entry(path: &str) -> oci::tar::TarEntry {
     oci::tar::TarEntry {
         path: PathBuf::from(path),
-        stat: Stat { st_mode: 0o755, st_uid: 0, st_gid: 0, st_mtim_sec: 0, xattrs: vec![]},
+        stat: Stat {
+            st_mode: 0o755,
+            st_uid: 0,
+            st_gid: 0,
+            st_mtim_sec: 0,
+            xattrs: vec![],
+        },
         item: oci::tar::TarItem::Directory,
     }
 }
@@ -167,7 +176,7 @@ fn assert_files(fs: &FileSystem, expected: &[&str]) -> Result<()> {
     write_dumpfile(&mut out, fs)?;
     let actual: Vec<String> = out
         .lines()
-        .map(|line| line.unwrap().split_once(' ').unwrap().0.into() )
+        .map(|line| line.unwrap().split_once(' ').unwrap().0.into())
         .collect();
 
     assert_eq!(actual, expected);
@@ -191,12 +200,17 @@ fn test_process_entry() -> Result<()> {
     process_entry(&mut fs, file_entry("/b/c"))?;
     process_entry(&mut fs, file_entry("/c/a"))?;
     process_entry(&mut fs, file_entry("/c/c"))?;
-    assert_files(&fs, &["/", "/a", "/a/b", "/a/c", "/b", "/b/a", "/b/c", "/c", "/c/a", "/c/c"])?;
+    assert_files(
+        &fs,
+        &[
+            "/", "/a", "/a/b", "/a/c", "/b", "/b/a", "/b/c", "/c", "/c/a", "/c/c",
+        ],
+    )?;
 
     // try some whiteouts
-    process_entry(&mut fs, file_entry(".wh.a"))?;  // entire dir
-    process_entry(&mut fs, file_entry("/b/.wh..wh.opq"))?;  // opaque dir
-    process_entry(&mut fs, file_entry("/c/.wh.c"))?;  // single file
+    process_entry(&mut fs, file_entry(".wh.a"))?; // entire dir
+    process_entry(&mut fs, file_entry("/b/.wh..wh.opq"))?; // opaque dir
+    process_entry(&mut fs, file_entry("/c/.wh.c"))?; // single file
     assert_files(&fs, &["/", "/b", "/c", "/c/a"])?;
 
     Ok(())
