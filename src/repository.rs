@@ -185,7 +185,11 @@ impl Repository {
         }
     }
 
-    pub fn write_stream(&self, writer: SplitStreamWriter) -> Result<Sha256HashValue> {
+    pub fn write_stream(
+        &self,
+        writer: SplitStreamWriter,
+        reference: Option<&str>,
+    ) -> Result<Sha256HashValue> {
         let Some((.., ref sha256)) = writer.sha256 else {
             bail!("Writer doesn't have sha256 enabled");
         };
@@ -193,7 +197,22 @@ impl Repository {
         let object_id = writer.done()?;
         let object_path = Repository::format_object_path(&object_id);
         self.ensure_symlink(&stream_path, &object_path)?;
+
+        if let Some(name) = reference {
+            let reference_path = format!("streams/refs/{name}");
+            self.symlink(&reference_path, &stream_path)?;
+        }
+
         Ok(object_id)
+    }
+
+    /// Assign the given name to a stream.  The stream must already exist.  After this operation it
+    /// will be possible to refer to the stream by its new name 'refs/{name}'.
+    pub fn name_stream(&self, sha256: Sha256HashValue, name: &str) -> Result<()> {
+        let stream_path = format!("streams/{}", hex::encode(sha256));
+        let reference_path = format!("streams/refs/{name}");
+        self.symlink(&reference_path, &stream_path)?;
+        Ok(())
     }
 
     /// Ensures that the stream with a given SHA256 digest exists in the repository.

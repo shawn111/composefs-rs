@@ -343,4 +343,27 @@ impl<R: Read> SplitStreamReader<R> {
             callback(&entry.body);
         }
     }
+
+    pub fn lookup(&self, body: &Sha256HashValue) -> Result<&Sha256HashValue> {
+        match self.refs.lookup(body) {
+            Some(id) => Ok(id),
+            None => bail!("Reference is not found in splitstream"),
+        }
+    }
+}
+
+impl<F: Read> Read for SplitStreamReader<F> {
+    fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
+        match self.ensure_chunk(true, false, 1) {
+            Ok(ChunkType::Eof) => Ok(0),
+            Ok(ChunkType::Inline) => {
+                let n_bytes = std::cmp::min(data.len(), self.inline_bytes);
+                self.decoder.read_exact(&mut data[0..n_bytes])?;
+                self.inline_bytes -= n_bytes;
+                Ok(n_bytes)
+            }
+            Ok(ChunkType::External(..)) => unreachable!(),
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+        }
+    }
 }

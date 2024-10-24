@@ -1,18 +1,12 @@
-use std::{
-    ffi::OsStr,
-    io::Read,
-    os::unix::ffi::OsStrExt,
-    path::Component,
-    process::{Command, Stdio},
-    rc::Rc,
-};
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::Component, rc::Rc};
 
 use anyhow::{bail, Result};
+use oci_spec::image::ImageConfiguration;
 
 use crate::{
     dumpfile::write_dumpfile,
     fsverity::Sha256HashValue,
-    image::{FileSystem, Leaf},
+    image::{mkcomposefs, FileSystem, Leaf},
     oci,
     repository::Repository,
 };
@@ -79,60 +73,28 @@ pub fn create_dumpfile(repo: &Repository, layers: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub fn create_image_from_layers(
-    repo: &Repository,
-    name: Option<&str>,
-    layers: &Vec<String>,
-) -> Result<Sha256HashValue> {
-    let mut filesystem = FileSystem::new();
-
-    for layer in layers {
-        let mut split_stream = repo.open_stream(layer, None)?;
-        while let Some(entry) = oci::tar::get_entry(&mut split_stream)? {
-            process_entry(&mut filesystem, entry)?;
-        }
-    }
-
-    let mut mkcomposefs = Command::new("mkcomposefs")
-        .args(["--from-file", "-", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-
-    let mut stdin = mkcomposefs.stdin.take().unwrap();
-    write_dumpfile(&mut stdin, &filesystem)?;
-    drop(stdin);
-
-    let mut stdout = mkcomposefs.stdout.take().unwrap();
-    let mut image = vec![];
-    stdout.read_to_end(&mut image)?;
-    drop(stdout);
-
-    if !mkcomposefs.wait()?.success() {
-        bail!("mkcomposefs failed");
-    };
-
-    repo.write_image(name, &image)
-}
-
-use oci_spec::image::ImageConfiguration;
-
 pub fn create_image(
     repo: &Repository,
     config: &str,
     name: Option<&str>,
 ) -> Result<Sha256HashValue> {
-    let mut raw_config = vec![];
-    repo.merge_splitstream(config, None, &mut raw_config)?;
-    let config = ImageConfiguration::from_reader(raw_config.as_slice())?;
-    let mut layers = vec![];
-    for diffid in config.rootfs().diff_ids() {
-        layers.push(match diffid.strip_prefix("sha256:") {
-            Some(rest) => rest.to_string(),
-            None => bail!("Invalid diffid {diffid}"),
-        });
+    let mut filesystem = FileSystem::new();
+
+    let mut config_stream = repo.open_stream(config, None)?;
+    let config = ImageConfiguration::from_reader(&mut config_stream)?;
+
+    for diff_id in config.rootfs().diff_ids() {
+        let layer_sha256 = super::sha256_from_digest(diff_id)?;
+        let layer_verity = config_stream.lookup(&layer_sha256)?;
+
+        let mut layer_stream = repo.open_stream(&hex::encode(layer_sha256), Some(layer_verity))?;
+        while let Some(entry) = oci::tar::get_entry(&mut layer_stream)? {
+            process_entry(&mut filesystem, entry)?;
+        }
     }
-    create_image_from_layers(repo, name, &layers)
+
+    let image = mkcomposefs(filesystem)?;
+    repo.write_image(name, &image)
 }
 
 #[cfg(test)]

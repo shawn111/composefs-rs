@@ -83,7 +83,7 @@ impl<'repo> ImageOp<'repo> {
             let decoder = GzipDecoder::new(blob_reader);
             let mut splitstream = self.repo.create_stream(Some(*layer_sha256), None);
             split_async(decoder, &mut splitstream).await?;
-            let layer_id = self.repo.write_stream(splitstream)?;
+            let layer_id = self.repo.write_stream(splitstream, None)?;
             driver.await?;
             Ok(layer_id)
         }
@@ -123,52 +123,40 @@ impl<'repo> ImageOp<'repo> {
                 .repo
                 .create_stream(Some(config_sha256), Some(config_maps));
             splitstream.write_inline(&raw_config);
-            let config_id = self.repo.write_stream(splitstream)?;
+            let config_id = self.repo.write_stream(splitstream, None)?;
 
             Ok((config_sha256, config_id))
         }
     }
 
-    pub async fn ensure_manifest(&self) -> Result<(Sha256HashValue, Sha256HashValue)> {
+    pub async fn pull(&self) -> Result<(Sha256HashValue, Sha256HashValue)> {
         dbg!("ensure_manifest", &self.img);
 
-        let (manifest_digest, raw_manifest) = self
+        let (_manifest_digest, raw_manifest) = self
             .proxy
             .fetch_manifest_raw_oci(&self.img)
             .await
             .context("Fetching manifest")?;
 
-        let sha256 = sha256_from_digest(&manifest_digest)?;
-
-        if let Some(id) = self.repo.has_stream(&sha256)? {
-            // We already got this manifest?  Nice.
-            Ok((sha256, id))
-        } else {
-            // We need to add the manifest to the repo.  We need to parse the manifest and make
-            // sure we have the config first (which will also pull in the layers).
-            let manifest = ImageManifest::from_reader(raw_manifest.as_slice())?;
-            let config_descriptor = manifest.config();
-            let layers = manifest.layers();
-            let (config_sha256, config_id) = self.ensure_config(layers, config_descriptor).await?;
-            println!("config sha256 {}", hex::encode(config_sha256));
-            println!("config verity {}", hex::encode(config_id));
-
-            let mut manifest_maps = DigestMap::new();
-            manifest_maps.insert(&config_sha256, &config_id);
-            let mut split_stream = self.repo.create_stream(Some(sha256), Some(manifest_maps));
-            split_stream.write_inline(&raw_manifest);
-            let id = self.repo.write_stream(split_stream)?;
-            Ok((sha256, id))
-        }
+        // We need to add the manifest to the repo.  We need to parse the manifest and make
+        // sure we have the config first (which will also pull in the layers).
+        let manifest = ImageManifest::from_reader(raw_manifest.as_slice())?;
+        let config_descriptor = manifest.config();
+        let layers = manifest.layers();
+        self.ensure_config(layers, config_descriptor).await
     }
 }
 
 /// Pull the target image, and add the provided tag. If this is a mountable
 /// image (i.e. not an artifact), it is *not* unpacked by default.
-pub async fn pull(repo: &Repository, imgref: &str, _name: Option<&str>) -> Result<()> {
+pub async fn pull(repo: &Repository, imgref: &str, reference: Option<&str>) -> Result<()> {
     let op = ImageOp::new(repo, imgref).await?;
-    let (sha256, id) = op.ensure_manifest().await?;
-    println!("manifest sha256 {}", hex::encode(sha256));
-    println!("manifest verity {}", hex::encode(id));
+    let (sha256, id) = op.pull().await?;
+
+    if let Some(name) = reference {
+        repo.name_stream(sha256, name)?;
+    }
+    println!("sha256 {}", hex::encode(sha256));
+    println!("verity {}", hex::encode(id));
     Ok(())
 }
