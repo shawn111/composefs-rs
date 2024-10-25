@@ -5,7 +5,7 @@ use std::{io::Read, iter::zip};
 
 use anyhow::{bail, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
-use containers_image_proxy::{ImageProxy, OpenedImage};
+use containers_image_proxy::{ImageProxy, ImageProxyConfig, OpenedImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use oci_spec::image::{Descriptor, ImageConfiguration, ImageManifest};
 use tokio::io::AsyncReadExt;
@@ -62,7 +62,11 @@ type ContentAndVerity = (Sha256HashValue, Sha256HashValue);
 
 impl<'repo> ImageOp<'repo> {
     async fn new(repo: &'repo Repository, imgref: &str) -> Result<Self> {
-        let proxy = containers_image_proxy::ImageProxy::new().await?;
+        let config = ImageProxyConfig {
+            // auth_anonymous: true, debug: true, insecure_skip_tls_verification: Some(true),
+            ..ImageProxyConfig::default()
+        };
+        let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
         let img = proxy.open_image(imgref).await.context("Opening image")?;
         let progress = MultiProgress::new();
         Ok(ImageOp {
