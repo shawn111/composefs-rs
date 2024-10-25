@@ -3,6 +3,7 @@ name = "composefs_experiments"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 edition = "2021"
+default-run = "cfsctl"
 
 [dependencies]
 anyhow = { version = "1.0.89", features = ["backtrace"] }
@@ -10,6 +11,7 @@ async-compression = { version = "0.4.17", features = ["tokio", "gzip", "zstd"] }
 clap = { version = "4.5.19", features = ["derive"] }
 containers-image-proxy = "0.7.0"
 hex = "0.4.3"
+indicatif = { version = "0.17.8", features = ["tokio"] }
 oci-spec = "0.7.0"
 rand = "0.8.5"
 rustix = { version = "0.38.37", features = ["fs", "mount", "process"] }

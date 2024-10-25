@@ -6,6 +6,7 @@ use std::{io::Read, iter::zip};
 use anyhow::{bail, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
 use containers_image_proxy::{ImageProxy, OpenedImage};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use oci_spec::image::{Descriptor, ImageConfiguration, ImageManifest};
 use tokio::io::AsyncReadExt;
 
@@ -40,6 +41,7 @@ struct ImageOp<'repo> {
     repo: &'repo Repository,
     proxy: ImageProxy,
     img: OpenedImage,
+    progress: MultiProgress,
 }
 
 fn sha256_from_descriptor(descriptor: &Descriptor) -> Result<Sha256HashValue> {
@@ -62,7 +64,13 @@ impl<'repo> ImageOp<'repo> {
     async fn new(repo: &'repo Repository, imgref: &str) -> Result<Self> {
         let proxy = containers_image_proxy::ImageProxy::new().await?;
         let img = proxy.open_image(imgref).await.context("Opening image")?;
-        Ok(ImageOp { repo, proxy, img })
+        let progress = MultiProgress::new();
+        Ok(ImageOp {
+            repo,
+            proxy,
+            img,
+            progress,
+        })
     }
 
     pub async fn ensure_layer(
@@ -74,13 +82,21 @@ impl<'repo> ImageOp<'repo> {
         // stored in the repository via the per_config descriptor.  Our return value is the
         // fsverity digest for the corresponding splitstream.
 
-        dbg!(hex::encode(layer_sha256), descriptor);
         if let Some(layer_id) = self.repo.has_stream(layer_sha256)? {
+            self.progress
+                .println(format!("Already have layer {}", hex::encode(layer_sha256)))?;
             Ok(layer_id)
         } else {
             // Otherwise, we need to fetch it...
             let (blob_reader, driver) = self.proxy.get_descriptor(&self.img, descriptor).await?;
-            let decoder = GzipDecoder::new(blob_reader);
+            let bar = self.progress.add(ProgressBar::new(descriptor.size()));
+            bar.set_style(ProgressStyle::with_template("[eta {eta}] {bar:40.cyan/blue} {decimal_bytes:>7}/{decimal_total_bytes:7} {msg}")
+                .unwrap()
+                .progress_chars("##-"));
+            let progress = bar.wrap_async_read(blob_reader);
+            self.progress
+                .println(format!("Fetching layer {}", hex::encode(layer_sha256)))?;
+            let decoder = GzipDecoder::new(progress);
             let mut splitstream = self.repo.create_stream(Some(*layer_sha256), None);
             split_async(decoder, &mut splitstream).await?;
             let layer_id = self.repo.write_stream(splitstream, None)?;
@@ -94,16 +110,20 @@ impl<'repo> ImageOp<'repo> {
         manifest_layers: &[Descriptor],
         descriptor: &Descriptor,
     ) -> Result<ContentAndVerity> {
-        dbg!("ensure_config", &self.img, manifest_layers, descriptor);
-
         let config_sha256 = sha256_from_descriptor(descriptor)?;
         if let Some(config_id) = self.repo.has_stream(&config_sha256)? {
             // We already got this config?  Nice.
+            self.progress.println(format!(
+                "Already have container layer {}",
+                hex::encode(config_sha256)
+            ))?;
             Ok((config_sha256, config_id))
         } else {
             // We need to add the config to the repo.  We need to parse the config and make sure we
             // have all of the layers first.
             //
+            self.progress
+                .println(format!("Fetching config {}", hex::encode(config_sha256)))?;
             let raw_config = self.proxy.fetch_config_raw(&self.img).await?;
             let config = ImageConfiguration::from_reader(raw_config.as_slice())?;
 
@@ -137,7 +157,6 @@ impl<'repo> ImageOp<'repo> {
         // We need to add the manifest to the repo.  We need to parse the manifest and make
         // sure we have the config first (which will also pull in the layers).
         let manifest = ImageManifest::from_reader(raw_manifest.as_slice())?;
-        dbg!(&manifest);
         let config_descriptor = manifest.config();
         let layers = manifest.layers();
         self.ensure_config(layers, config_descriptor)
