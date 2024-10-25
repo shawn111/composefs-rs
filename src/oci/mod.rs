@@ -103,19 +103,17 @@ impl<'repo> ImageOp<'repo> {
         } else {
             // We need to add the config to the repo.  We need to parse the config and make sure we
             // have all of the layers first.
-            let (mut blob_reader, driver) =
-                self.proxy.get_descriptor(&self.img, descriptor).await?;
-            let mut raw_config = vec![];
-            let (a, b) = tokio::join!(blob_reader.read_to_end(&mut raw_config), driver);
-            a?;
-            b?;
-
+            //
+            let raw_config = self.proxy.fetch_config_raw(&self.img).await?;
             let config = ImageConfiguration::from_reader(raw_config.as_slice())?;
 
             let mut config_maps = DigestMap::new();
             for (mld, cld) in zip(manifest_layers, config.rootfs().diff_ids()) {
                 let layer_sha256 = sha256_from_digest(cld)?;
-                let layer_id = self.ensure_layer(&layer_sha256, mld).await?;
+                let layer_id = self
+                    .ensure_layer(&layer_sha256, mld)
+                    .await
+                    .with_context(|| format!("Failed to fetch layer {cld} via {mld:?}"))?;
                 config_maps.insert(&layer_sha256, &layer_id);
             }
 
@@ -130,8 +128,6 @@ impl<'repo> ImageOp<'repo> {
     }
 
     pub async fn pull(&self) -> Result<(Sha256HashValue, Sha256HashValue)> {
-        dbg!("ensure_manifest", &self.img);
-
         let (_manifest_digest, raw_manifest) = self
             .proxy
             .fetch_manifest_raw_oci(&self.img)
@@ -141,9 +137,12 @@ impl<'repo> ImageOp<'repo> {
         // We need to add the manifest to the repo.  We need to parse the manifest and make
         // sure we have the config first (which will also pull in the layers).
         let manifest = ImageManifest::from_reader(raw_manifest.as_slice())?;
+        dbg!(&manifest);
         let config_descriptor = manifest.config();
         let layers = manifest.layers();
-        self.ensure_config(layers, config_descriptor).await
+        self.ensure_config(layers, config_descriptor)
+            .await
+            .with_context(|| format!("Failed to pull config {config_descriptor:?}"))
     }
 }
 
@@ -151,7 +150,10 @@ impl<'repo> ImageOp<'repo> {
 /// image (i.e. not an artifact), it is *not* unpacked by default.
 pub async fn pull(repo: &Repository, imgref: &str, reference: Option<&str>) -> Result<()> {
     let op = ImageOp::new(repo, imgref).await?;
-    let (sha256, id) = op.pull().await?;
+    let (sha256, id) = op
+        .pull()
+        .await
+        .with_context(|| format!("Unable to pull container image {imgref}"))?;
 
     if let Some(name) = reference {
         repo.name_stream(sha256, name)?;
