@@ -16,8 +16,8 @@ use crate::{
 };
 
 pub struct DigestMapEntry {
-    body: Sha256HashValue,
-    verity: Sha256HashValue,
+    pub body: Sha256HashValue,
+    pub verity: Sha256HashValue,
 }
 
 pub struct DigestMap {
@@ -161,7 +161,7 @@ pub enum SplitStreamData {
 // utility class to help read splitstreams
 pub struct SplitStreamReader<R: Read> {
     decoder: Decoder<'static, BufReader<R>>,
-    refs: DigestMap,
+    pub refs: DigestMap,
     inline_bytes: usize,
 }
 

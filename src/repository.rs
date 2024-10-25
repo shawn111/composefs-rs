@@ -16,6 +16,7 @@ use rustix::{
     },
     io::{Errno, Result as ErrnoResult},
 };
+use sha2::{Digest, Sha256};
 
 use crate::{
     fsverity::{
@@ -173,12 +174,48 @@ impl Repository {
                 // NB: This is kinda unsafe: we depend that the symlink didn't get corrupted
                 // we could also measure the verity of the destination object, but it doesn't
                 // improve anything, since we don't know if it was the original one.
+                //
+                // One thing we *could* do here is to iterate the entire file and verify the sha256
+                // content hash.  That would allow us to reestablish a solid link between
+                // content-sha256 and verity digest.
                 let bytes = target.as_bytes();
                 ensure!(
                     bytes.starts_with(b"../"),
                     "stream symlink has incorrect prefix"
                 );
                 Ok(Some(Repository::parse_object_path(&bytes[3..])?))
+            }
+            Err(Errno::NOENT) => Ok(None),
+            Err(err) => Err(err)?,
+        }
+    }
+
+    /// Basically the same as has_stream() except that it performs expensive verification
+    pub fn check_stream(&self, sha256: &Sha256HashValue) -> Result<Option<Sha256HashValue>> {
+        match self.openat(&format!("streams/{}", hex::encode(sha256)), OFlags::RDONLY) {
+            Ok(stream) => {
+                let measured_verity: Sha256HashValue = fs_ioc_measure_verity(&stream)?;
+                let mut context = Sha256::new();
+                let mut split_stream = SplitStreamReader::new(File::from(stream))?;
+
+                // check the verity of all linked streams
+                for entry in &split_stream.refs.map {
+                    if self.check_stream(&entry.body)? != Some(entry.verity) {
+                        bail!("reference mismatch");
+                    }
+                }
+
+                // check this stream
+                split_stream.cat(&mut context, |id| -> Result<Vec<u8>> {
+                    let mut data = vec![];
+                    File::from(self.open_object(id)?).read_to_end(&mut data)?;
+                    Ok(data)
+                })?;
+                if *sha256 != Into::<[u8; 32]>::into(context.finalize()) {
+                    bail!("Content didn't match!");
+                }
+
+                Ok(Some(measured_verity))
             }
             Err(Errno::NOENT) => Ok(None),
             Err(err) => Err(err)?,
@@ -325,12 +362,12 @@ impl Repository {
         self.write_image(Some(name), &data)
     }
 
-    pub fn mount(self, name: &str, mountpoint: &str) -> Result<()> {
+    pub fn mount(&self, name: &str, mountpoint: &str) -> Result<()> {
         let filename = format!("images/{}", name);
 
         let image = if name.contains("/") {
             // no fsverity checking on this path
-            self.openat(&filename, OFlags::RDONLY)
+            Ok(self.openat(&filename, OFlags::RDONLY)?)
         } else {
             self.open_with_verity(&filename, &parse_sha256(name)?)
         }?;
@@ -424,8 +461,8 @@ impl Repository {
         Ok(())
     }
 
-    fn openat(&self, name: &str, flags: OFlags) -> Result<OwnedFd> {
-        Ok(openat(&self.repository, name, flags, Mode::empty())?)
+    fn openat(&self, name: &str, flags: OFlags) -> ErrnoResult<OwnedFd> {
+        openat(&self.repository, name, flags, Mode::empty())
     }
 
     fn gc_category(&self, category: &str) -> Result<HashSet<Sha256HashValue>> {

@@ -43,6 +43,14 @@ enum OciCommand {
         config: String,
         name: Option<String>,
     },
+    Seal {
+        name: String,
+        verity: Option<String>,
+    },
+    Mount {
+        name: String,
+        mountpoint: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -119,7 +127,7 @@ fn main() -> Result<()> {
                 oci::image::create_dumpfile(&repo, &layers)?;
             }
             OciCommand::CreateImage { config, name } => {
-                let image_id = oci::image::create_image(&repo, &config, name.as_deref())?;
+                let image_id = oci::image::create_image(&repo, &config, name.as_deref(), None)?;
                 println!("{}", hex::encode(image_id));
             }
             OciCommand::Pull { ref image, name } => {
@@ -129,6 +137,18 @@ fn main() -> Result<()> {
                     .expect("Failed to build tokio runtime");
                 // And invoke the async_main
                 runtime.block_on(async move { oci::pull(&repo, image, name.as_deref()).await })?;
+            }
+            OciCommand::Seal { verity, ref name } => {
+                let (sha256, verity) =
+                    oci::seal(&repo, name, verity.map(parse_sha256).transpose()?.as_ref())?;
+                println!("sha256 {}", hex::encode(sha256));
+                println!("verity {}", hex::encode(verity));
+            }
+            OciCommand::Mount {
+                ref name,
+                ref mountpoint,
+            } => {
+                oci::mount(&repo, name, mountpoint, None)?;
             }
         },
         Command::Mount { name, mountpoint } => {

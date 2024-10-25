@@ -1,13 +1,14 @@
 pub mod image;
 pub mod tar;
 
-use std::{io::Read, iter::zip};
+use std::{collections::HashMap, io::Read, iter::zip};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
 use containers_image_proxy::{ImageProxy, ImageProxyConfig, OpenedImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use oci_spec::image::{Descriptor, ImageConfiguration, ImageManifest};
+use sha2::{Digest, Sha256};
 
 use crate::{
     fsverity::Sha256HashValue,
@@ -85,7 +86,7 @@ impl<'repo> ImageOp<'repo> {
         // stored in the repository via the per_config descriptor.  Our return value is the
         // fsverity digest for the corresponding splitstream.
 
-        if let Some(layer_id) = self.repo.has_stream(layer_sha256)? {
+        if let Some(layer_id) = self.repo.check_stream(layer_sha256)? {
             self.progress
                 .println(format!("Already have layer {}", hex::encode(layer_sha256)))?;
             Ok(layer_id)
@@ -114,10 +115,10 @@ impl<'repo> ImageOp<'repo> {
         descriptor: &Descriptor,
     ) -> Result<ContentAndVerity> {
         let config_sha256 = sha256_from_descriptor(descriptor)?;
-        if let Some(config_id) = self.repo.has_stream(&config_sha256)? {
+        if let Some(config_id) = self.repo.check_stream(&config_sha256)? {
             // We already got this config?  Nice.
             self.progress.println(format!(
-                "Already have container layer {}",
+                "Already have container config {}",
                 hex::encode(config_sha256)
             ))?;
             Ok((config_sha256, config_id))
@@ -183,4 +184,93 @@ pub async fn pull(repo: &Repository, imgref: &str, reference: Option<&str>) -> R
     println!("sha256 {}", hex::encode(sha256));
     println!("verity {}", hex::encode(id));
     Ok(())
+}
+
+pub fn open_config(
+    repo: &Repository,
+    name: &str,
+    verity: Option<&Sha256HashValue>,
+) -> Result<(ImageConfiguration, DigestMap)> {
+    let id = match verity {
+        Some(id) => id,
+        None => {
+            // take the expensive route
+            let sha256 = parse_sha256(name)
+                .context("Containers must be referred to by sha256 if verity is missing")?;
+            &repo
+                .check_stream(&sha256)?
+                .with_context(|| format!("Object {name} is unknown to us"))?
+        }
+    };
+    let mut stream = repo.open_stream(name, Some(id))?;
+    let config = ImageConfiguration::from_reader(&mut stream)?;
+    Ok((config, stream.refs))
+}
+
+fn hash(bytes: &[u8]) -> Sha256HashValue {
+    let mut context = Sha256::new();
+    context.update(bytes);
+    context.finalize().into()
+}
+
+pub fn open_config_shallow(
+    repo: &Repository,
+    name: &str,
+    verity: Option<&Sha256HashValue>,
+) -> Result<ImageConfiguration> {
+    match verity {
+        // with verity deep opens are just as fast as shallow ones
+        Some(id) => Ok(open_config(repo, name, Some(id))?.0),
+        None => {
+            // we need to manually check the content digest
+            let expected_hash = parse_sha256(name)
+                .context("Containers must be referred to by sha256 if verity is missing")?;
+            let mut stream = repo.open_stream(name, None)?;
+            let mut raw_config = vec![];
+            stream.read_to_end(&mut raw_config)?;
+            ensure!(hash(&raw_config) == expected_hash, "Data integrity issue");
+            Ok(ImageConfiguration::from_reader(&mut raw_config.as_slice())?)
+        }
+    }
+}
+
+pub fn write_config(
+    repo: &Repository,
+    config: &ImageConfiguration,
+    refs: DigestMap,
+) -> Result<(Sha256HashValue, Sha256HashValue)> {
+    let json = config.to_string()?;
+    let json_bytes = json.as_bytes();
+    let sha256 = hash(json_bytes);
+    let mut stream = repo.create_stream(Some(sha256), Some(refs));
+    stream.write_inline(json_bytes);
+    let id = repo.write_stream(stream, None)?;
+    Ok((sha256, id))
+}
+
+pub fn seal(
+    repo: &Repository,
+    name: &str,
+    verity: Option<&Sha256HashValue>,
+) -> Result<(Sha256HashValue, Sha256HashValue)> {
+    let (mut config, refs) = open_config(repo, name, verity)?;
+    let mut myconfig = config.config().clone().context("no config!")?;
+    let labels = myconfig.labels_mut().get_or_insert_with(HashMap::new);
+    let id = crate::oci::image::create_image(repo, name, None, verity)?;
+    labels.insert("containers.composefs.fsverity".to_string(), hex::encode(id));
+    config.set_config(Some(myconfig));
+    write_config(repo, &config, refs)
+}
+
+pub fn mount(
+    repo: &Repository,
+    name: &str,
+    mountpoint: &str,
+    verity: Option<&Sha256HashValue>,
+) -> Result<()> {
+    let config = open_config_shallow(repo, name, verity)?;
+    let Some(id) = config.get_config_annotation("containers.composefs.fsverity") else {
+        bail!("Can only mount sealed containers");
+    };
+    repo.mount(id, mountpoint)
 }

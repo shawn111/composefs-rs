@@ -77,10 +77,11 @@ pub fn create_image(
     repo: &Repository,
     config: &str,
     name: Option<&str>,
+    verity: Option<&Sha256HashValue>,
 ) -> Result<Sha256HashValue> {
     let mut filesystem = FileSystem::new();
 
-    let mut config_stream = repo.open_stream(config, None)?;
+    let mut config_stream = repo.open_stream(config, verity)?;
     let config = ImageConfiguration::from_reader(&mut config_stream)?;
 
     for diff_id in config.rootfs().diff_ids() {
