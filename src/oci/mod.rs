@@ -8,7 +8,6 @@ use async_compression::tokio::bufread::GzipDecoder;
 use containers_image_proxy::{ImageProxy, ImageProxyConfig, OpenedImage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use oci_spec::image::{Descriptor, ImageConfiguration, ImageManifest};
-use tokio::io::AsyncReadExt;
 
 use crate::{
     fsverity::Sha256HashValue,
