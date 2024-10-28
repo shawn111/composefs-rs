@@ -79,6 +79,7 @@ pub fn mount_fd<F: AsFd>(image: F, basedir: &Path, mountpoint: &str) -> Result<(
     let overlayfs = FsHandle::open("overlay")?;
     fsconfig_set_string(overlayfs.as_fd(), "metacopy", "on")?;
     fsconfig_set_string(overlayfs.as_fd(), "redirect_dir", "on")?;
+    fsconfig_set_string(overlayfs.as_fd(), "verity", "require")?;
 
     // unfortunately we can't do this via the fd: we need a tmpdir mountpoint
     let tmp = TmpMount::mount(erofs.as_fd())?; // NB: must live until the "create" operation
