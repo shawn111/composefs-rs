@@ -1,12 +1,17 @@
 use std::{
+    fs::canonicalize,
     os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     path::Path,
 };
 
 use anyhow::Result;
-use rustix::mount::{
-    fsconfig_create, fsconfig_set_string, fsmount, fsopen, move_mount, unmount, FsMountFlags,
-    FsOpenFlags, MountAttrFlags, MoveMountFlags, UnmountFlags,
+use rustix::{
+    fs::CWD,
+    io::Errno,
+    mount::{
+        fsconfig_create, fsconfig_set_string, fsmount, fsopen, move_mount, open_tree, unmount,
+        FsMountFlags, FsOpenFlags, MountAttrFlags, MoveMountFlags, OpenTreeFlags, UnmountFlags,
+    },
 };
 
 use crate::fsverity;
@@ -71,7 +76,7 @@ fn proc_self_fd<A: AsFd>(fd: A) -> String {
     format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd())
 }
 
-pub fn mount_fd<F: AsFd>(image: F, basedir: &Path, mountpoint: &str) -> Result<()> {
+pub fn composefs_fsmount(image: impl AsFd, basedir: &Path) -> Result<OwnedFd> {
     let erofs = FsHandle::open("erofs")?;
     fsconfig_set_string(erofs.as_fd(), "source", proc_self_fd(&image))?;
     fsconfig_create(erofs.as_fd())?;
@@ -87,20 +92,51 @@ pub fn mount_fd<F: AsFd>(image: F, basedir: &Path, mountpoint: &str) -> Result<(
     fsconfig_set_string(overlayfs.as_fd(), "datadir+", basedir)?;
     fsconfig_create(overlayfs.as_fd())?;
 
-    let mnt = fsmount(
+    Ok(fsmount(
         overlayfs.as_fd(),
         FsMountFlags::FSMOUNT_CLOEXEC,
         MountAttrFlags::empty(),
-    )?;
+    )?)
+}
+
+pub fn mount_fd<F: AsFd>(image: F, basedir: &Path, mountpoint: &str) -> Result<()> {
+    let mnt = composefs_fsmount(image, basedir)?;
+
     move_mount(
         mnt.as_fd(),
         "",
         rustix::fs::CWD,
-        mountpoint,
+        canonicalize(mountpoint)?,
         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
     )?;
 
     Ok(())
+}
+
+pub fn pivot_sysroot(image: impl AsFd, basedir: &Path, sysroot: &Path) -> Result<()> {
+    let mnt = composefs_fsmount(image, basedir)?;
+
+    let prev = open_tree(CWD, sysroot, OpenTreeFlags::OPEN_TREE_CLONE)?;
+    unmount(sysroot, UnmountFlags::DETACH)?;
+
+    move_mount(
+        mnt.as_fd(),
+        "",
+        rustix::fs::CWD,
+        sysroot,
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    )?;
+
+    match move_mount(
+        prev.as_fd(),
+        "",
+        rustix::fs::CWD,
+        sysroot.join("sysroot"),
+        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+    ) {
+        Ok(()) | Err(Errno::NOENT) => Ok(()),
+        Err(err) => Err(err)?,
+    }
 }
 
 pub struct MountOptions<'a> {

@@ -24,7 +24,7 @@ use crate::{
         ioctl::{fs_ioc_enable_verity, fs_ioc_measure_verity},
         FsVerityHashValue, Sha256HashValue,
     },
-    mount::mount_fd,
+    mount::{mount_fd, pivot_sysroot},
     splitstream::{DigestMap, SplitStreamReader, SplitStreamWriter},
     util::{parse_sha256, proc_self_fd},
 };
@@ -374,6 +374,13 @@ impl Repository {
 
         let object_path = self.path.join("objects");
         mount_fd(image, &object_path, mountpoint)
+    }
+
+    pub fn pivot_sysroot(&self, name: &str, mountpoint: &Path) -> Result<()> {
+        let filename = format!("images/{}", name);
+        let object_path = self.path.join("objects");
+        let image = self.open_with_verity(&filename, &parse_sha256(name)?)?;
+        pivot_sysroot(image, &object_path, mountpoint)
     }
 
     pub fn symlink(&self, name: impl AsRef<Path>, target: impl AsRef<Path>) -> ErrnoResult<()> {
