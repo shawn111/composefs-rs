@@ -10,7 +10,7 @@ fn parse_composefs_cmdline() -> Result<Sha256HashValue> {
     let mut proc_cmdline = std::fs::File::open("/proc/cmdline")?;
     proc_cmdline.read_to_end(&mut cmdline)?;
     // TODO?: officially we need to understand quoting with double-quotes...
-    for part in cmdline.split(|c| *c == b' ') {
+    for part in cmdline.split(|c| c.is_ascii_whitespace()) {
         if let Some(digest) = part.strip_prefix(b"composefs=") {
             let mut value = [0; 32];
             hex::decode_to_slice(digest, &mut value)?;
