@@ -274,3 +274,20 @@ pub fn mount(
     };
     repo.mount(id, mountpoint)
 }
+
+pub fn meta_layer(repo: &Repository, name: &str, verity: Option<&Sha256HashValue>) -> Result<()> {
+    let (config, refs) = open_config(repo, name, verity)?;
+
+    let ids = config.rootfs().diff_ids();
+    if ids.len() >= 3 {
+        let layer_sha256 = sha256_from_digest(&ids[ids.len() - 2])?;
+        let layer_verity = refs.lookup(&layer_sha256).context("bzzt")?;
+        repo.merge_splitstream(
+            &hex::encode(layer_sha256),
+            Some(layer_verity),
+            &mut std::io::stdout(),
+        )
+    } else {
+        bail!("No meta layer here");
+    }
+}

@@ -51,6 +51,9 @@ enum OciCommand {
         name: String,
         mountpoint: String,
     },
+    MetaLayer {
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -149,6 +152,9 @@ fn main() -> Result<()> {
                 ref mountpoint,
             } => {
                 oci::mount(&repo, name, mountpoint, None)?;
+            }
+            OciCommand::MetaLayer { ref name } => {
+                oci::meta_layer(&repo, name, None)?;
             }
         },
         Command::Mount { name, mountpoint } => {
