@@ -1,0 +1,62 @@
+#!/bin/sh
+
+set -eux
+
+cd "${0%/*}"
+
+PODMAN_BUILD="podman build --no-cache"
+
+if [ -d ~/.cache/container-build-cache ]; then
+    PODMAN_BUILD="${PODMAN_BUILD} --security-opt=label=disable --volume=${HOME}/.cache/container-build-cache:/var/cache:U"
+fi
+
+cargo build --release
+
+cp ../../target/release/composefs-pivot-sysroot extra/usr/lib/dracut/modules.d/37composefs/
+CFSCTL='../../target/release/cfsctl --repo tmp/sysroot/composefs'
+
+rm -rf tmp
+mkdir -p tmp/sysroot/composefs tmp/efi
+
+${PODMAN_BUILD} \
+    --iidfile=tmp/base.iid \
+    --target=base \
+    .
+
+BASE_ID="$(sed s/sha256:// tmp/base.iid)"
+podman save --format oci-archive -o tmp/base.tar "${BASE_ID}"
+${CFSCTL} oci pull oci-archive:tmp/base.tar
+BASE_IMAGE_FSVERITY="$(${CFSCTL} oci create-image "${BASE_ID}")"
+
+${PODMAN_BUILD} \
+    --iidfile=tmp/final.iid \
+    --build-context=base="container-image://${BASE_ID}" \
+    --build-arg=COMPOSEFS_FSVERITY="${BASE_IMAGE_FSVERITY}" \
+    --label=containers.composefs.fsverity="${BASE_IMAGE_FSVERITY}" \
+    .
+
+FINAL_ID="$(sed s/sha256:// tmp/final.iid)"
+podman save --format oci-archive -o tmp/final.tar "${FINAL_ID}"
+${CFSCTL} oci pull oci-archive:tmp/final.tar
+FINAL_IMAGE_FSVERITY="$(${CFSCTL} oci create-image "${BASE_ID}")"
+
+## IMPORTANT: the filesystems of the base and final images are identical
+test "${BASE_IMAGE_FSVERITY}" = "${FINAL_IMAGE_FSVERITY}"
+
+${CFSCTL} oci meta-layer "${FINAL_ID}" | tar -C tmp -xv
+
+> tmp/image.raw
+SYSTEMD_REPART_MKFS_OPTIONS_EXT4='-O verity' \
+    fakeroot \
+        systemd-repart \
+            --empty=require \
+            --size=auto \
+            --dry-run=no \
+            --no-pager \
+            --offline=yes \
+            --root=tmp \
+            --definitions=repart.d \
+            tmp/image.raw
+
+qemu-img convert -f raw tmp/image.raw -O qcow2 image.qcow2
+./fix-verity image.qcow2  # https://github.com/tytso/e2fsprogs/issues/201

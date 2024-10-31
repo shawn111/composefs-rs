@@ -1,0 +1,46 @@
+# A special form of Containerfile for composefs-enabled UKI images
+# This file must have:
+#
+#  - a stage called 'base' which contains all of the
+#    files of the final image, but not the kernel
+#
+#  - further stages, ultimately resulting in the final container image.  In
+#    this image, the kernel must be present in a whiteout-obscured directory
+#    /composefs-meta/boot/ and otherwise no other changes may be made vs. the
+#    base image.  This is best-accomplished with a multi-stage build.
+#
+#  - during the build stages following 'base', the `COMPOSEFS_FSVERITY` build
+#    arg will be set to the fsverity digest of the container image.  This should
+#    be baked into the UKI.
+
+# Need 6.12 kernel from rawhide
+FROM fedora:rawhide AS base
+RUN <<EOF
+    set -eux
+    # we should install kernel-modules here, but can't
+    # because it'll pull in the entire kernel with it
+    # it seems to work fine for now....
+    dnf --setopt keepcache=1 install -y systemd util-linux
+    passwd -d root
+    mkdir /sysroot
+EOF
+
+FROM base AS kernel
+ARG COMPOSEFS_FSVERITY
+COPY extra /
+RUN <<EOF
+    set -eux
+    mkdir -p /etc/kernel /etc/dracut.conf.d
+    echo "root=PARTLABEL=root-x86-64 composefs=${COMPOSEFS_FSVERITY}" > /etc/kernel/cmdline
+    # systemd-boot-unsigned: ditto
+    # btrfs-progs: dracut wants to include this in the initramfs
+    # ukify: dracut doesn't want to take our cmdline args?
+    dnf --setopt keepcache=1 install -y kernel btrfs-progs systemd-boot-unsigned systemd-ukify
+EOF
+
+# This could (better?) be done from cfsctl...
+FROM base AS bootable
+COPY --from=kernel /boot /composefs-meta/boot
+# RUN rm -rf /composefs-meta
+# RUN commands touch /run unfortunately
+COPY empty /.wh.composefs-meta
