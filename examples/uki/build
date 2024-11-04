@@ -12,11 +12,12 @@ fi
 
 cargo build --release
 
+cp ../../target/release/cfsctl .
 cp ../../target/release/composefs-pivot-sysroot extra/usr/lib/dracut/modules.d/37composefs/
-CFSCTL='../../target/release/cfsctl --repo tmp/sysroot/composefs'
+CFSCTL='./cfsctl --repo tmp/sysroot/composefs'
 
 rm -rf tmp
-mkdir -p tmp/sysroot/composefs tmp/efi
+mkdir -p tmp/sysroot/composefs tmp/sysroot/var
 
 ${PODMAN_BUILD} \
     --iidfile=tmp/base.iid \
@@ -44,6 +45,8 @@ FINAL_IMAGE_FSVERITY="$(${CFSCTL} oci create-image "${BASE_ID}")"
 test "${BASE_IMAGE_FSVERITY}" = "${FINAL_IMAGE_FSVERITY}"
 
 ${CFSCTL} oci meta-layer "${FINAL_ID}" | tar -C tmp -xv
+mkdir tmp/composefs-meta/boot/loader
+echo 'timeout 3' > tmp/composefs-meta/boot/loader/loader.conf
 
 > tmp/image.raw
 SYSTEMD_REPART_MKFS_OPTIONS_EXT4='-O verity' \

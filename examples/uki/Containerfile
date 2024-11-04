@@ -15,23 +15,26 @@
 
 # Need 6.12 kernel from rawhide
 FROM fedora:rawhide AS base
+COPY extra /
+COPY cfsctl /usr/bin
 RUN <<EOF
     set -eux
     # we should install kernel-modules here, but can't
     # because it'll pull in the entire kernel with it
     # it seems to work fine for now....
-    dnf --setopt keepcache=1 install -y systemd util-linux
+    dnf --setopt keepcache=1 install -y systemd util-linux skopeo composefs strace dosfstools
+    systemctl enable systemd-networkd
     passwd -d root
     mkdir /sysroot
 EOF
 
 FROM base AS kernel
 ARG COMPOSEFS_FSVERITY
-COPY extra /
 RUN <<EOF
     set -eux
     mkdir -p /etc/kernel /etc/dracut.conf.d
-    echo "root=PARTLABEL=root-x86-64 composefs=${COMPOSEFS_FSVERITY}" > /etc/kernel/cmdline
+    echo "composefs=${COMPOSEFS_FSVERITY} rw" > /etc/kernel/cmdline
+
     # systemd-boot-unsigned: ditto
     # btrfs-progs: dracut wants to include this in the initramfs
     # ukify: dracut doesn't want to take our cmdline args?

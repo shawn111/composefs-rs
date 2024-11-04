@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Result;
 use rustix::{
-    fs::CWD,
+    fs::{major, minor, stat, symlink, CWD},
     io::Errno,
     mount::{
         fsconfig_create, fsconfig_set_string, fsmount, fsopen, move_mount, open_tree, unmount,
@@ -114,8 +114,18 @@ pub fn mount_fd<F: AsFd>(image: F, basedir: &Path, mountpoint: &str) -> Result<(
 }
 
 pub fn pivot_sysroot(image: impl AsFd, basedir: &Path, sysroot: &Path) -> Result<()> {
+    // https://github.com/systemd/systemd/issues/35017
+    let rootdev = stat("/dev/gpt-auto-root")?;
+    let target = format!(
+        "/dev/block/{}:{}",
+        major(rootdev.st_rdev),
+        minor(rootdev.st_rdev)
+    );
+    symlink(target, "/run/systemd/volatile-root")?;
+
     let mnt = composefs_fsmount(image, basedir)?;
 
+    // try to move /sysroot to /sysroot/sysroot if it exists
     let prev = open_tree(CWD, sysroot, OpenTreeFlags::OPEN_TREE_CLONE)?;
     unmount(sysroot, UnmountFlags::DETACH)?;
 
@@ -130,10 +140,24 @@ pub fn pivot_sysroot(image: impl AsFd, basedir: &Path, sysroot: &Path) -> Result
     match move_mount(
         prev.as_fd(),
         "",
-        rustix::fs::CWD,
-        sysroot.join("sysroot"),
+        mnt.as_fd(),
+        "sysroot",
         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
     ) {
+        Ok(()) | Err(Errno::NOENT) => {}
+        Err(err) => Err(err)?,
+    }
+
+    // try to bind-mount (original) /sysroot/var to (new) /sysroot/var, if it exists
+    match open_tree(prev.as_fd(), "var", OpenTreeFlags::OPEN_TREE_CLONE).and_then(|var| {
+        move_mount(
+            var.as_fd(),
+            "",
+            mnt.as_fd(),
+            "var",
+            MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    }) {
         Ok(()) | Err(Errno::NOENT) => Ok(()),
         Err(err) => Err(err)?,
     }
