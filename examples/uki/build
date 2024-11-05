@@ -47,6 +47,9 @@ test "${BASE_IMAGE_FSVERITY}" = "${FINAL_IMAGE_FSVERITY}"
 ${CFSCTL} oci meta-layer "${FINAL_ID}" | tar -C tmp -xv
 mkdir tmp/composefs-meta/boot/loader
 echo 'timeout 3' > tmp/composefs-meta/boot/loader/loader.conf
+mkdir -p tmp/composefs-meta/boot/EFI/BOOT tmp/composefs-meta/boot/EFI/systemd
+cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi tmp/composefs-meta/boot/EFI/systemd
+cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi tmp/composefs-meta/boot/EFI/BOOT/BOOTX64.EFI
 
 > tmp/image.raw
 SYSTEMD_REPART_MKFS_OPTIONS_EXT4='-O verity' \
