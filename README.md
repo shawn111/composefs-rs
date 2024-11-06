@@ -1,4 +1,4 @@
-# composefs experiments in rust
+# composefs-rs
 
 This is a set of experiments exploring ideas around how to structure an on-disk
 [composefs](https://github.com/containers/composefs) repository.

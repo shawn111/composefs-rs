@@ -3,7 +3,7 @@ use std::{fmt::Write, fs::create_dir_all, path::PathBuf};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-use composefs_experiments::{oci, repository::Repository};
+use composefs::{oci, repository::Repository};
 
 fn append_data(builder: &mut tar::Builder<Vec<u8>>, name: &str, size: usize) -> Result<()> {
     let mut header = tar::Header::new_ustar();

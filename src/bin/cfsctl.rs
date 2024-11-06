@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use composefs_experiments::{oci, repository::Repository, util::parse_sha256};
+use composefs::{oci, repository::Repository, util::parse_sha256};
 
 /// cfsctl
 #[derive(Debug, Parser)]

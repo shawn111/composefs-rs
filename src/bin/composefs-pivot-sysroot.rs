@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
-use composefs_experiments::{fsverity::Sha256HashValue, repository::Repository};
+use composefs::{fsverity::Sha256HashValue, repository::Repository};
 
 fn parse_composefs_cmdline(cmdline: &[u8]) -> Result<Sha256HashValue> {
     // TODO?: officially we need to understand quoting with double-quotes...

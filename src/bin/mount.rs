@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use composefs_experiments::mount::MountOptions;
+use composefs::mount::MountOptions;
 
 /// mount a composefs
 #[derive(Parser, Debug)]
