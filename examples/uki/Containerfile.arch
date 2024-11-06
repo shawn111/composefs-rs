@@ -1,0 +1,33 @@
+FROM archlinux AS base
+COPY extra /
+COPY cfsctl /usr/bin
+RUN <<EOF
+    set -eux
+    touch /etc/machine-id
+    pacman -Sy --noconfirm skopeo composefs strace dosfstools
+    systemctl enable systemd-networkd systemd-resolved
+    passwd -d root
+    mkdir /sysroot
+EOF
+
+FROM base AS kernel
+ARG COMPOSEFS_FSVERITY
+RUN <<EOF
+    set -eux
+    # systemd-boot-unsigned: ditto
+    # btrfs-progs: dracut wants to include this in the initramfs
+    # ukify: dracut doesn't want to take our cmdline args?
+    pacman -Sy --noconfirm dracut btrfs-progs systemd-ukify
+    curl -O https://pkgbuild.com/~jelle/linux-mainline-6.12rc6-1-x86_64.pkg.tar.zst
+    pacman -U --noconfirm linux-mainline-6.12rc6-1-x86_64.pkg.tar.zst
+    ls -l /usr/lib/modules
+    dracut --kver 6.12.0-rc6-1-mainline --uefi --kernel-cmdline="composefs=${COMPOSEFS_FSVERITY} rw"
+    # " systemd.log_level=debug systemd.log_target=console console=ttyS0,38400 console=tty1"
+EOF
+
+# This could (better?) be done from cfsctl...
+FROM base AS bootable
+COPY --from=kernel /boot /composefs-meta/boot
+# RUN rm -rf /composefs-meta
+# RUN commands touch /run unfortunately
+COPY empty /.wh.composefs-meta

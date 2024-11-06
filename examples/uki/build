@@ -22,6 +22,7 @@ mkdir -p tmp/sysroot/composefs tmp/sysroot/var
 ${PODMAN_BUILD} \
     --iidfile=tmp/base.iid \
     --target=base \
+    "$@" \
     .
 
 BASE_ID="$(sed s/sha256:// tmp/base.iid)"
@@ -34,6 +35,7 @@ ${PODMAN_BUILD} \
     --build-context=base="container-image://${BASE_ID}" \
     --build-arg=COMPOSEFS_FSVERITY="${BASE_IMAGE_FSVERITY}" \
     --label=containers.composefs.fsverity="${BASE_IMAGE_FSVERITY}" \
+    "$@" \
     .
 
 FINAL_ID="$(sed s/sha256:// tmp/final.iid)"
