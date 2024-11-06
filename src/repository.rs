@@ -311,7 +311,7 @@ impl Repository {
         SplitStreamReader::new(file)
     }
 
-    fn open_object(&self, id: &Sha256HashValue) -> Result<OwnedFd> {
+    pub fn open_object(&self, id: &Sha256HashValue) -> Result<OwnedFd> {
         self.open_with_verity(
             &format!("objects/{:02x}/{}", id[0], hex::encode(&id[1..])),
             id,

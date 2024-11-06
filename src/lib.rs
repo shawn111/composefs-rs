@@ -1,4 +1,5 @@
 pub mod dumpfile;
+pub mod fs;
 pub mod fsverity;
 pub mod image;
 pub mod mount;

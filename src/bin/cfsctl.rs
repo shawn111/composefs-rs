@@ -54,6 +54,10 @@ enum OciCommand {
     MetaLayer {
         name: String,
     },
+    PrepareBoot {
+        name: String,
+        bootdir: Option<PathBuf>
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -156,6 +160,11 @@ fn main() -> Result<()> {
             OciCommand::MetaLayer { ref name } => {
                 oci::meta_layer(&repo, name, None)?;
             }
+            OciCommand::PrepareBoot { ref name, bootdir } => {
+                let output = bootdir.unwrap_or(PathBuf::from("/boot"));
+                oci::prepare_boot(&repo, name, None, &output)?;
+            }
+
         },
         Command::Mount { name, mountpoint } => {
             repo.mount(&name, &mountpoint)?;

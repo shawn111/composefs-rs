@@ -1,7 +1,7 @@
 pub mod image;
 pub mod tar;
 
-use std::{collections::HashMap, io::Read, iter::zip};
+use std::{collections::HashMap, ffi::OsStr, io::Read, iter::zip, path::Path};
 
 use anyhow::{bail, ensure, Context, Result};
 use async_compression::tokio::bufread::GzipDecoder;
@@ -11,6 +11,7 @@ use oci_spec::image::{Descriptor, ImageConfiguration, ImageManifest};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    fs::write_to_path,
     fsverity::Sha256HashValue,
     oci::tar::{get_entry, split_async},
     repository::Repository,
@@ -290,4 +291,45 @@ pub fn meta_layer(repo: &Repository, name: &str, verity: Option<&Sha256HashValue
     } else {
         bail!("No meta layer here");
     }
+}
+
+pub fn prepare_boot(
+    repo: &Repository,
+    name: &str,
+    verity: Option<&Sha256HashValue>,
+    output_dir: &Path,
+) -> Result<()> {
+    let (config, refs) = open_config(repo, name, verity)?;
+
+    /* TODO: check created image ID against composefs label on container, if set */
+    /* TODO: check created image ID against composefs= .cmdline in UKI or loader entry */
+    crate::oci::image::create_image(repo, name, None, verity)?;
+
+    /*
+    let layer_digest = config
+        .get_config_annotation("containers.composefs.attachments")
+        .with_context(|| format!("Can't find attachments layer for container {name}"))?;
+    let layer_sha256 = sha256_from_digest(layer_digest)?;
+    */
+
+    let ids = config.rootfs().diff_ids();
+    ensure!(ids.len() >= 3, "No meta layer here");
+    let layer_sha256 = sha256_from_digest(&ids[ids.len() - 2])?;
+    let layer_verity = refs
+        .lookup(&layer_sha256)
+        .with_context(|| "Attachments layer {layer} is not connected to image {name}")?;
+
+    // read the layer into a FileSystem object
+    let mut filesystem = crate::image::FileSystem::new();
+    let mut split_stream = repo.open_stream(&hex::encode(layer_sha256), Some(layer_verity))?;
+    while let Some(entry) = tar::get_entry(&mut split_stream)? {
+        image::process_entry(&mut filesystem, entry)?;
+    }
+
+    let boot = filesystem
+        .root
+        .recurse(OsStr::new("composefs-meta"))?
+        .recurse(OsStr::new("boot"))?;
+
+    write_to_path(&repo, &boot, output_dir)
 }

@@ -44,12 +44,12 @@ FINAL_IMAGE_FSVERITY="$(${CFSCTL} oci create-image "${FINAL_ID}")"
 ## IMPORTANT: the filesystems of the base and final images are identical
 test "${BASE_IMAGE_FSVERITY}" = "${FINAL_IMAGE_FSVERITY}"
 
-${CFSCTL} oci meta-layer "${FINAL_ID}" | tar -C tmp -xv
-mkdir tmp/composefs-meta/boot/loader
-echo 'timeout 3' > tmp/composefs-meta/boot/loader/loader.conf
-mkdir -p tmp/composefs-meta/boot/EFI/BOOT tmp/composefs-meta/boot/EFI/systemd
-cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi tmp/composefs-meta/boot/EFI/systemd
-cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi tmp/composefs-meta/boot/EFI/BOOT/BOOTX64.EFI
+mkdir -p tmp/efi/loader
+echo 'timeout 3' > tmp/efi/loader/loader.conf
+mkdir -p tmp/efi/EFI/BOOT tmp/efi/EFI/systemd
+cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi tmp/efi/EFI/systemd
+cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi tmp/efi/EFI/BOOT/BOOTX64.EFI
+${CFSCTL} oci prepare-boot "${FINAL_ID}" tmp/efi
 
 > tmp/image.raw
 SYSTEMD_REPART_MKFS_OPTIONS_EXT4='-O verity' \
