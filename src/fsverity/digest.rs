@@ -147,3 +147,23 @@ impl FsVerityHasher {
         context.finalize().into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use super::*;
+
+    #[test]
+    fn test_digest() -> Result<()> {
+        let digest = FsVerityHasher::hash(b"hello world");
+        assert_eq!(
+            digest,
+            [
+                30, 46, 170, 66, 2, 215, 80, 164, 17, 116, 238, 69, 73, 112, 185, 44, 27, 194, 249,
+                37, 177, 227, 80, 118, 216, 199, 213, 245, 99, 98, 186, 100
+            ]
+        );
+        Ok(())
+    }
+}
