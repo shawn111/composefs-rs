@@ -1,9 +1,14 @@
 [package]
 name = "composefs"
-version = "0.1.0"
-license = "MIT OR Apache-2.0"
+version = "0.2.0"
 edition = "2021"
+description = "Rust library for the composefs filesystem"
+keywords = ["composefs"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/containers/composefs-rs"
+readme = "README.md"
 default-run = "cfsctl"
+exclude = ["/.git*", "/examples/uki/"]
 
 [dependencies]
 anyhow = { version = "1.0.89", features = ["backtrace"] }
