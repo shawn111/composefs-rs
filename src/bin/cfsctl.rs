@@ -56,7 +56,7 @@ enum OciCommand {
     },
     PrepareBoot {
         name: String,
-        bootdir: Option<PathBuf>
+        bootdir: Option<PathBuf>,
     },
 }
 
@@ -164,7 +164,6 @@ fn main() -> Result<()> {
                 let output = bootdir.unwrap_or(PathBuf::from("/boot"));
                 oci::prepare_boot(&repo, name, None, &output)?;
             }
-
         },
         Command::Mount { name, mountpoint } => {
             repo.mount(&name, &mountpoint)?;

@@ -33,7 +33,12 @@ fn set_file_contents(dirfd: &OwnedFd, name: &OsStr, stat: &Stat, data: &[u8]) ->
         }
         Err(Errno::OPNOTSUPP) => {
             // vfat? yolo...
-            let fd = openat(dirfd, name, OFlags::CREATE | OFlags::WRONLY, stat.st_mode.into())?;
+            let fd = openat(
+                dirfd,
+                name,
+                OFlags::CREATE | OFlags::WRONLY,
+                stat.st_mode.into(),
+            )?;
             write(&fd, data)?;
             fdatasync(&fd)?;
         }

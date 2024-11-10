@@ -331,5 +331,5 @@ pub fn prepare_boot(
         .recurse(OsStr::new("composefs-meta"))?
         .recurse(OsStr::new("boot"))?;
 
-    write_to_path(&repo, &boot, output_dir)
+    write_to_path(repo, boot, output_dir)
 }
