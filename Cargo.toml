@@ -32,6 +32,11 @@ zstd = "0.13.2"
 # this is *really* slow otherwise
 opt-level = 3
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [lib]
 name = "composefs"
 path = "src/lib.rs"
