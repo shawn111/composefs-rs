@@ -1,5 +1,6 @@
 #![deny(missing_debug_implementations)]
 
+pub mod bootloader;
 pub mod dumpfile;
 pub mod dumpfile_parse;
 pub mod erofs;
